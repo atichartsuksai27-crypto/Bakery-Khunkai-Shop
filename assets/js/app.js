@@ -43,7 +43,11 @@
   /** ดึงข้อมูลกลางจาก Cloudflare D1 — คืน null ถ้าเรียกไม่สำเร็จ (ให้ใช้ข้อมูลในเครื่องแทน) */
   function loadRemote() {
     return fetch(API, { cache: 'no-store' })
-      .then(function (res) { if (!res.ok) throw new Error('status ' + res.status); return res.json(); })
+      .then(function (res) {
+        if (res.status === 401) { location.href = '/login.html'; throw new Error('session หมดอายุ'); }
+        if (!res.ok) throw new Error('status ' + res.status);
+        return res.json();
+      })
       .then(function (d) {
         if (!d || !d.ingredients || !d.recipes) throw new Error('payload ไม่ถูกต้อง');
         apiAvailable = true;
@@ -73,7 +77,11 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(state.data)
     })
-      .then(function (res) { if (!res.ok) throw new Error('status ' + res.status); return res.json(); })
+      .then(function (res) {
+        if (res.status === 401) { location.href = '/login.html'; throw new Error('session หมดอายุ'); }
+        if (!res.ok) throw new Error('status ' + res.status);
+        return res.json();
+      })
       .then(function (r) {
         apiAvailable = true;
         state.data.updatedAt = r.updatedAt || state.data.updatedAt;
@@ -550,6 +558,16 @@
     state.view = b.dataset.view;
     render();
   });
+
+  var logoutBtn = document.getElementById('logoutBtn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', function () {
+      logoutBtn.disabled = true;
+      fetch('/api/logout', { method: 'POST' })
+        .catch(function () { /* เน็ตหลุดก็ยังพาไปหน้า login ต่อได้ */ })
+        .then(function () { location.href = '/login.html'; });
+    });
+  }
 
   /* ผูกค่าจาก input กลับเข้า model */
   app.addEventListener('input', function (e) {
