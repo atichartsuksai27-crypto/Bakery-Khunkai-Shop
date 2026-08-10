@@ -1,0 +1,50 @@
+/**
+ * ข้อมูลตั้งต้น — ถอดจากสมุดจดสูตร + ไฟล์ ระบบสูตรและต้นทุนขนม.xlsx
+ * ราคาทุกอย่างอ้างอิงหน่วยที่ใช้ในสูตร (ต้นทุน/หน่วย = ราคาที่ซื้อ ÷ ขนาดบรรจุ)
+ */
+window.SEED_DATA = {
+  version: 1,
+
+  ingredients: [
+    { id: 'ing-01', name: 'แป้งเค้ก',      unit: 'กรัม', pack: 1000, price: 33,   note: '33 บาท/กก.' },
+    { id: 'ing-02', name: 'แป้งข้าว',      unit: 'กรัม', pack: 1000, price: 36,   note: '36 บาท/กก. (ชื่อในสมุดอ่านไม่ชัด โปรดตรวจสอบ)' },
+    { id: 'ing-03', name: 'น้ำตาลทราย',    unit: 'กรัม', pack: 1000, price: 27,   note: '27 บาท/กก.' },
+    { id: 'ing-04', name: 'กรดมะนาว',      unit: 'กรัม', pack: 1000, price: 0,    note: 'ในสมุดไม่ได้ระบุราคา' },
+    { id: 'ing-05', name: 'ไข่ไก่',         unit: 'ฟอง',  pack: 1,    price: 5,    note: '5 บาท/ฟอง' },
+    { id: 'ing-06', name: 'น้ำมันรำข้าว',  unit: 'กรัม', pack: 5000, price: 345,  note: '345 บาท / 5 กก.' },
+    { id: 'ing-07', name: 'เนยสด',          unit: 'กรัม', pack: 5000, price: 1510, note: '1,510 บาท / 5 กก.' },
+    { id: 'ing-08', name: 'กล้วยหอมสุก',   unit: 'กรัม', pack: 1000, price: 45,   note: '45 บาท/กก.' },
+    { id: 'ing-09', name: 'ผงฟู',           unit: 'กรัม', pack: 1000, price: 129,  note: '129 บาท/กก.' },
+    { id: 'ing-10', name: 'เกลือ',          unit: 'กรัม', pack: 1000, price: 16,   note: '16 บาท/กก.' },
+    { id: 'ing-11', name: 'เบกกิ้งโซดา',   unit: 'กรัม', pack: 1000, price: 110,  note: '110 บาท/กก.' },
+    { id: 'ing-12', name: 'กลิ่นกล้วย',    unit: 'ครั้ง', pack: 1,    price: 5,    note: 'คิดเหมา 5 บาท/สูตร' }
+  ],
+
+  recipes: [
+    {
+      id: 'rcp-01',
+      name: 'เค้กกล้วยหอม',
+      category: 'เค้ก',
+      baseLabel: 'ไข่ 6 ฟอง',
+      basePieces: 25,
+      note: 'บันทึกท้ายตารางในสมุด: ขาย 4 ชิ้น 40 บาท · ต้นทุน 24 บาท · 6 บาทต่อชิ้น',
+      items: [
+        { ingredientId: 'ing-01', qty: 274, include: true  },
+        { ingredientId: 'ing-02', qty: 274, include: true  },
+        { ingredientId: 'ing-03', qty: 330, include: true  },
+        { ingredientId: 'ing-04', qty: 7,   include: false },
+        { ingredientId: 'ing-05', qty: 6,   include: true  },
+        { ingredientId: 'ing-06', qty: 382, include: true  },
+        { ingredientId: 'ing-07', qty: 192, include: true  },
+        { ingredientId: 'ing-08', qty: 646, include: false },
+        { ingredientId: 'ing-09', qty: 15,  include: true  },
+        { ingredientId: 'ing-10', qty: 4,   include: true  },
+        { ingredientId: 'ing-11', qty: 8,   include: true  },
+        { ingredientId: 'ing-12', qty: 1,   include: true  }
+      ],
+      pricing: { packaging: 0, labor: 0, sellPrice: 10 }
+    }
+  ],
+
+  multipliers: [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5]
+};

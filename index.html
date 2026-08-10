@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Bakery Khunkai — ระบบสูตรและต้นทุนขนม</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧁</text></svg>">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">🧁</span>
+    <div>
+      <strong>Bakery Khunkai</strong>
+      <small>ระบบสูตรและต้นทุนขนม · ใช้ภายในองค์กร</small>
+    </div>
+  </div>
+  <nav class="tabs" id="nav">
+    <button class="tab" data-view="dashboard">ภาพรวม</button>
+    <button class="tab" data-view="recipes">สูตรขนม</button>
+    <button class="tab" data-view="production">คิดรอบผลิต</button>
+    <button class="tab" data-view="pricing">ตั้งราคาขาย</button>
+    <button class="tab" data-view="ingredients">วัตถุดิบ</button>
+    <button class="tab" data-view="data">ข้อมูล</button>
+  </nav>
+</header>
+
+<main id="app"></main>
+
+<footer class="foot">
+  <span>ข้อมูลบันทึกไว้ในเบราว์เซอร์เครื่องนี้ (localStorage) — สำรองไฟล์ได้ที่เมนู “ข้อมูล”</span>
+  <span id="savedAt"></span>
+</footer>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="assets/js/data.js"></script>
+<script src="assets/js/app.js"></script>
+</body>
+</html>
