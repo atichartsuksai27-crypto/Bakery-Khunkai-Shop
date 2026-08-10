@@ -1,40 +1,40 @@
 /* Bakery Khunkai — internal cost system
-   สีหลัก: ครีม/น้ำตาลอบ + เขียวสำหรับกำไร แดงสำหรับขาดทุน */
+   สีหลัก: ส้มอบอุ่น (แบรนด์) บนพื้นครีม + เขียวสำหรับกำไร แดงสำหรับขาดทุน */
 
 :root {
-  --bg: #f6f4f1;
+  --bg: #fff8f2;
   --surface: #ffffff;
-  --surface-2: #faf8f6;
-  --line: #e6e1db;
-  --text: #23201d;
-  --muted: #837b73;
-  --brand: #8a5a2b;
-  --brand-soft: #f3e7da;
-  --accent: #c2410c;
+  --surface-2: #fff1e4;
+  --line: #fbddb8;
+  --text: #2b1a0e;
+  --muted: #93725a;
+  --brand: #ea580c;
+  --brand-soft: #ffe3c6;
+  --accent: #f97316;
   --good: #15803d;
   --good-soft: #e7f5ec;
   --bad: #b91c1c;
-  --warn-soft: #fdf3d8;
+  --warn-soft: #ffedd0;
   --radius: 14px;
-  --shadow: 0 1px 2px rgba(35, 32, 29, .05), 0 8px 24px -12px rgba(35, 32, 29, .18);
+  --shadow: 0 1px 2px rgba(120, 60, 10, .06), 0 10px 26px -14px rgba(120, 60, 10, .28);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #16140f;
-    --surface: #1f1c17;
-    --surface-2: #262219;
-    --line: #35301f;
-    --text: #f0ebe3;
-    --muted: #a89f92;
-    --brand: #e0a86a;
-    --brand-soft: #33291c;
-    --accent: #f59e5b;
+    --bg: #1a1108;
+    --surface: #241809;
+    --surface-2: #2e1e0d;
+    --line: #4a3013;
+    --text: #fce9d5;
+    --muted: #cba180;
+    --brand: #fb923c;
+    --brand-soft: #40270e;
+    --accent: #fdba74;
     --good: #6ee7a0;
     --good-soft: #17301f;
     --bad: #fca5a5;
-    --warn-soft: #33291c;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
+    --warn-soft: #40270e;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .45), 0 10px 26px -14px rgba(0, 0, 0, .75);
   }
 }
 
@@ -63,12 +63,17 @@ body {
 
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand-mark {
-  font-size: 26px;
-  width: 44px; height: 44px;
+  font-size: 24px;
+  width: 46px; height: 46px;
+  flex: 0 0 auto;
   display: grid; place-items: center;
-  background: var(--brand-soft);
-  border-radius: 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: var(--shadow);
 }
+.brand-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .brand strong { display: block; font-size: 17px; letter-spacing: .2px; }
 .brand small { color: var(--muted); font-size: 12.5px; }
 
