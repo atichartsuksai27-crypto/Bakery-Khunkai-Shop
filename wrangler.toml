@@ -1,0 +1,11 @@
+# Bakery Khunkai — Cloudflare Pages + D1
+# database_id จะถูกเติมอัตโนมัติหลังสร้างฐานข้อมูลด้วย: npm run db:create
+
+name = "bakery-khunkai-shop"
+pages_build_output_dir = "."
+compatibility_date = "2025-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bakery-khunkai-db"
+database_id = "d30092a6-7a97-4346-93c8-d918e10a6992"

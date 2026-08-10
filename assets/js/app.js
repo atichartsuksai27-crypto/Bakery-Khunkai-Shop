@@ -1,12 +1,17 @@
 /* Bakery Khunkai — ระบบสูตรและต้นทุนขนม (ใช้ภายในองค์กร)
-   Vanilla JS ล้วน ไม่มี dependency — เปิดไฟล์ index.html ก็ใช้ได้ทันที
-   ข้อมูลเก็บที่ localStorage ของเบราว์เซอร์เครื่องนั้น ๆ */
+   Vanilla JS ล้วน ไม่มี dependency
+   ข้อมูลจริงอยู่ที่ Cloudflare D1 ผ่าน /api/state (ทุกเครื่องเห็นข้อมูลเดียวกัน)
+   localStorage ใช้เป็นแคชสำหรับเปิดหน้าได้ทันที + fallback ตอนออฟไลน์/รันแบบไม่มี Functions */
 
 (function () {
   'use strict';
 
   var STORAGE_KEY = 'bakery-khunkai/v1';
+  var API = '/api/state';
   var app = document.getElementById('app');
+  var apiAvailable = null; // null = ยังไม่รู้, true/false = รู้แล้ว
+  var saveTimer = null;
+  var savePending = false;
 
   /* ============================================================ store */
 
@@ -19,7 +24,7 @@
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
 
-  function load() {
+  function loadLocal() {
     try {
       var raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
@@ -30,22 +35,67 @@
     return clone(window.SEED_DATA);
   }
 
+  function cacheLocal() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data)); }
+    catch (e) { /* เปิดจากไฟล์โดยตรงบางเบราว์เซอร์จะบันทึกไม่ได้ — ใช้งานต่อได้ */ }
+  }
+
+  /** ดึงข้อมูลกลางจาก Cloudflare D1 — คืน null ถ้าเรียกไม่สำเร็จ (ให้ใช้ข้อมูลในเครื่องแทน) */
+  function loadRemote() {
+    return fetch(API, { cache: 'no-store' })
+      .then(function (res) { if (!res.ok) throw new Error('status ' + res.status); return res.json(); })
+      .then(function (d) {
+        if (!d || !d.ingredients || !d.recipes) throw new Error('payload ไม่ถูกต้อง');
+        apiAvailable = true;
+        return d;
+      })
+      .catch(function (e) {
+        apiAvailable = false;
+        console.warn('โหลดข้อมูลกลางไม่สำเร็จ ใช้ข้อมูลในเครื่องแทน:', e.message);
+        return null;
+      });
+  }
+
+  /** เรียกบันทึกแบบหน่วงเวลา (debounce) กันยิง API ถี่เกินไปตอนพิมพ์ */
   function save() {
     state.data.updatedAt = new Date().toISOString();
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
-    } catch (e) {
-      /* เปิดจากไฟล์โดยตรงบางเบราว์เซอร์จะบันทึกไม่ได้ — ยังใช้งานต่อได้แต่ไม่ค้างข้อมูล */
-      console.warn('บันทึกลง localStorage ไม่สำเร็จ:', e);
-    }
+    cacheLocal();
     stamp();
+    savePending = true;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveRemote, 600);
+  }
+
+  function saveRemote() {
+    if (apiAvailable === false) { savePending = false; stamp(); return; }
+    fetch(API, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(state.data)
+    })
+      .then(function (res) { if (!res.ok) throw new Error('status ' + res.status); return res.json(); })
+      .then(function (r) {
+        apiAvailable = true;
+        state.data.updatedAt = r.updatedAt || state.data.updatedAt;
+        savePending = false;
+        stamp();
+      })
+      .catch(function (e) {
+        apiAvailable = false;
+        savePending = false;
+        console.warn('บันทึกขึ้นฐานข้อมูลกลางไม่สำเร็จ:', e.message);
+        stamp();
+      });
   }
 
   function stamp() {
     var el = document.getElementById('savedAt');
     if (!el) return;
+    if (savePending) { el.textContent = 'กำลังบันทึก…'; return; }
     var t = state.data.updatedAt;
-    el.textContent = t ? 'บันทึกล่าสุด ' + new Date(t).toLocaleString('th-TH') : '';
+    var base = t ? 'บันทึกล่าสุด ' + new Date(t).toLocaleString('th-TH') : '';
+    if (apiAvailable === false) base += ' · โหมดออฟไลน์ (บันทึกเฉพาะเครื่องนี้)';
+    el.textContent = base;
   }
 
   function uid(prefix) {
@@ -677,7 +727,19 @@
 
   /* ============================================================ start */
 
-  state.data = load();
+  // 1) วาดหน้าจอทันทีด้วยข้อมูลที่แคชไว้ในเครื่อง (ให้เปิดเว็บได้ไวแม้เน็ตช้า)
+  state.data = loadLocal();
   if (state.data.recipes.length) state.recipeId = state.data.recipes[0].id;
   render();
+
+  // 2) แล้วค่อยซิงก์กับฐานข้อมูลกลาง (Cloudflare D1) เพื่อให้เห็นข้อมูลล่าสุดที่ทุกคนแก้ร่วมกัน
+  loadRemote().then(function (remote) {
+    if (!remote) { stamp(); return; }
+    state.data = remote;
+    cacheLocal();
+    if (!state.data.recipes.some(function (r) { return r.id === state.recipeId; })) {
+      state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;
+    }
+    render();
+  });
 })();

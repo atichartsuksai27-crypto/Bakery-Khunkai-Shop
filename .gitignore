@@ -11,6 +11,10 @@ Desktop.ini
 node_modules/
 npm-debug.log*
 
+# Cloudflare / wrangler
+.wrangler/
+.dev.vars
+
 # ค่าเฉพาะเครื่อง
 .claude/settings.local.json
 .vscode/
