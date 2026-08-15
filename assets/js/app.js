@@ -13,11 +13,27 @@
   var saveTimer = null;
   var savePending = false;
 
+  /* หมวดหมู่วัตถุดิบ — รายการตายตัว เรียงตามลำดับที่กำหนด */
+  var CATEGORIES = [
+    { id: 'flour', label: 'แป้ง' },
+    { id: 'sugar', label: 'น้ำตาล' },
+    { id: 'dairy-fat', label: 'นม เนย น้ำมัน' },
+    { id: 'chocolate', label: 'ช็อกโกแลต/ผงโกโก้' },
+    { id: 'seasoning', label: 'เครื่องปรุง สารเสริม' },
+    { id: 'packaging', label: 'แพ็คเกจ' },
+    { id: 'other', label: 'อื่นๆ' }
+  ];
+  var CATEGORY_LABEL = {};
+  CATEGORIES.forEach(function (c) { CATEGORY_LABEL[c.id] = c.label; });
+  function catLabel(id) { return CATEGORY_LABEL[id] || CATEGORY_LABEL.other; }
+  function catOf(ing) { return (ing && ing.category && CATEGORY_LABEL[ing.category]) ? ing.category : 'other'; }
+
   /* ============================================================ store */
 
   var state = {
     view: 'dashboard',
     recipeId: null,
+    ingFilter: 'all',
     targetPieces: 100,
     data: null
   };
@@ -452,27 +468,58 @@
     var html = head('คลังราคาวัตถุดิบ', 'แก้ราคาที่นี่ที่เดียว — ต้นทุนทุกสูตรอัปเดตตามทันที',
       '<button class="btn primary" data-act="add-ing">+ เพิ่มวัตถุดิบ</button>');
 
-    html += '<div class="card"><div class="table-wrap"><table><thead><tr>' +
-      '<th style="min-width:150px">ชื่อวัตถุดิบ</th><th>หน่วยในสูตร</th>' +
-      '<th class="num">ขนาดบรรจุ</th><th class="num">ราคาที่ซื้อ (บาท)</th>' +
-      '<th class="num">ต้นทุน/หน่วย</th><th style="min-width:180px">หมายเหตุ</th><th></th>' +
-      '</tr></thead><tbody>' +
-      list.map(function (i, idx) {
-        var used = state.data.recipes.filter(function (r) {
-          return r.items.some(function (it) { return it.ingredientId === i.id; });
-        }).length;
-        return '<tr>' +
-          '<td>' + inp('text', 'g.name.' + idx, i.name) + '</td>' +
-          '<td>' + inp('text', 'g.unit.' + idx, i.unit, 'style="max-width:90px"') + '</td>' +
-          '<td class="num">' + inp('number', 'g.pack.' + idx, i.pack, 'step="1" min="0" class="cell-num"') + '</td>' +
-          '<td class="num">' + inp('number', 'g.price.' + idx, i.price, 'step="0.25" min="0" class="cell-num"') + '</td>' +
-          '<td class="num"><strong>' + num(unitCost(i), 4) + '</strong><br><span class="muted" style="font-size:12px">บาท/' + esc(i.unit) + '</span></td>' +
-          '<td>' + inp('text', 'g.note.' + idx, i.note || '') + '</td>' +
-          '<td>' + (used ? '<span class="chip">ใช้ใน ' + used + ' สูตร</span>' :
-            '<button class="btn ghost sm" data-act="del-ing" data-idx="' + idx + '">✕</button>') + '</td>' +
-        '</tr>';
+    // แถบหมวดหมู่ + จำนวนวัตถุดิบต่อหมวด
+    var counts = { all: list.length };
+    CATEGORIES.forEach(function (c) { counts[c.id] = 0; });
+    list.forEach(function (i) { counts[catOf(i)]++; });
+
+    html += '<div class="card"><div class="pill-list">' +
+      '<button class="pill' + (state.ingFilter === 'all' ? ' is-active' : '') + '" data-act="filter-ing" data-cat="all">ทั้งหมด (' + counts.all + ')</button>' +
+      CATEGORIES.map(function (c) {
+        return '<button class="pill' + (state.ingFilter === c.id ? ' is-active' : '') + '" data-act="filter-ing" data-cat="' + c.id + '">' +
+          esc(c.label) + ' (' + counts[c.id] + ')</button>';
       }).join('') +
-      '</tbody></table></div></div>';
+      '</div></div>';
+
+    var groups = state.ingFilter === 'all'
+      ? CATEGORIES
+      : CATEGORIES.filter(function (c) { return c.id === state.ingFilter; });
+
+    groups.forEach(function (cat) {
+      var rows = [];
+      list.forEach(function (i, idx) { if (catOf(i) === cat.id) rows.push({ i: i, idx: idx }); });
+      if (!rows.length) return;
+
+      html += '<div class="card"><h2>' + esc(cat.label) + ' <span class="hint">' + rows.length + ' รายการ</span></h2>' +
+        '<div class="table-wrap"><table><thead><tr>' +
+        '<th style="min-width:150px">ชื่อวัตถุดิบ</th><th>หน่วยในสูตร</th>' +
+        '<th class="num">ขนาดบรรจุ</th><th class="num">ราคาที่ซื้อ (บาท)</th>' +
+        '<th class="num">ต้นทุน/หน่วย</th><th style="min-width:150px">หมวดหมู่</th>' +
+        '<th style="min-width:180px">หมายเหตุ</th><th></th>' +
+        '</tr></thead><tbody>' +
+        rows.map(function (row) {
+          var i = row.i, idx = row.idx;
+          var used = state.data.recipes.filter(function (r) {
+            return r.items.some(function (it) { return it.ingredientId === i.id; });
+          }).length;
+          return '<tr>' +
+            '<td>' + inp('text', 'g.name.' + idx, i.name) + '</td>' +
+            '<td>' + inp('text', 'g.unit.' + idx, i.unit, 'style="max-width:90px"') + '</td>' +
+            '<td class="num">' + inp('number', 'g.pack.' + idx, i.pack, 'step="1" min="0" class="cell-num"') + '</td>' +
+            '<td class="num">' + inp('number', 'g.price.' + idx, i.price, 'step="0.25" min="0" class="cell-num"') + '</td>' +
+            '<td class="num"><strong>' + num(unitCost(i), 4) + '</strong><br><span class="muted" style="font-size:12px">บาท/' + esc(i.unit) + '</span></td>' +
+            '<td>' + categorySelect('g.category.' + idx, catOf(i)) + '</td>' +
+            '<td>' + inp('text', 'g.note.' + idx, i.note || '') + '</td>' +
+            '<td>' + (used ? '<span class="chip">ใช้ใน ' + used + ' สูตร</span>' :
+              '<button class="btn ghost sm" data-act="del-ing" data-idx="' + idx + '">✕</button>') + '</td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table></div></div>';
+    });
+
+    if (state.ingFilter !== 'all' && !list.some(function (i) { return catOf(i) === state.ingFilter; })) {
+      html += '<p class="empty">ยังไม่มีวัตถุดิบในหมวดนี้</p>';
+    }
 
     return html;
   };
@@ -517,9 +564,24 @@
       esc(value) + '" ' + (extra || '') + '>';
   }
   function select(bind, value) {
-    return '<select data-bind="' + bind + '" data-fkey="' + bind + '">' +
-      state.data.ingredients.map(function (i) {
+    var groups = {};
+    state.data.ingredients.forEach(function (i) {
+      var cat = catOf(i);
+      (groups[cat] = groups[cat] || []).push(i);
+    });
+    var body = CATEGORIES.map(function (c) {
+      var items = groups[c.id];
+      if (!items || !items.length) return '';
+      return '<optgroup label="' + esc(c.label) + '">' + items.map(function (i) {
         return '<option value="' + i.id + '"' + (i.id === value ? ' selected' : '') + '>' + esc(i.name) + '</option>';
+      }).join('') + '</optgroup>';
+    }).join('');
+    return '<select data-bind="' + bind + '" data-fkey="' + bind + '">' + body + '</select>';
+  }
+  function categorySelect(bind, value) {
+    return '<select data-bind="' + bind + '" data-fkey="' + bind + '">' +
+      CATEGORIES.map(function (c) {
+        return '<option value="' + c.id + '"' + (c.id === value ? ' selected' : '') + '>' + esc(c.label) + '</option>';
       }).join('') + '</select>';
   }
   function kv(k, v) {
@@ -642,8 +704,13 @@
       save(); render();
 
     } else if (act === 'add-ing') {
-      state.data.ingredients.push({ id: uid('ing'), name: 'วัตถุดิบใหม่', unit: 'กรัม', pack: 1000, price: 0, note: '' });
+      var newCat = state.ingFilter !== 'all' ? state.ingFilter : 'other';
+      state.data.ingredients.push({ id: uid('ing'), name: 'วัตถุดิบใหม่', unit: 'กรัม', pack: 1000, price: 0, note: '', category: newCat });
       save(); render(); toast('เพิ่มวัตถุดิบแล้ว');
+
+    } else if (act === 'filter-ing') {
+      state.ingFilter = b.dataset.cat;
+      render();
 
     } else if (act === 'del-ing') {
       state.data.ingredients.splice(+b.dataset.idx, 1);

@@ -6,18 +6,18 @@ window.SEED_DATA = {
   version: 1,
 
   ingredients: [
-    { id: 'ing-01', name: 'แป้งเค้ก',      unit: 'กรัม', pack: 1000, price: 33,   note: '33 บาท/กก.' },
-    { id: 'ing-02', name: 'แป้งข้าว',      unit: 'กรัม', pack: 1000, price: 36,   note: '36 บาท/กก. (ชื่อในสมุดอ่านไม่ชัด โปรดตรวจสอบ)' },
-    { id: 'ing-03', name: 'น้ำตาลทราย',    unit: 'กรัม', pack: 1000, price: 27,   note: '27 บาท/กก.' },
-    { id: 'ing-04', name: 'กรดมะนาว',      unit: 'กรัม', pack: 1000, price: 0,    note: 'ในสมุดไม่ได้ระบุราคา' },
-    { id: 'ing-05', name: 'ไข่ไก่',         unit: 'ฟอง',  pack: 1,    price: 5,    note: '5 บาท/ฟอง' },
-    { id: 'ing-06', name: 'น้ำมันรำข้าว',  unit: 'กรัม', pack: 5000, price: 345,  note: '345 บาท / 5 กก.' },
-    { id: 'ing-07', name: 'เนยสด',          unit: 'กรัม', pack: 5000, price: 1510, note: '1,510 บาท / 5 กก.' },
-    { id: 'ing-08', name: 'กล้วยหอมสุก',   unit: 'กรัม', pack: 1000, price: 45,   note: '45 บาท/กก.' },
-    { id: 'ing-09', name: 'ผงฟู',           unit: 'กรัม', pack: 1000, price: 129,  note: '129 บาท/กก.' },
-    { id: 'ing-10', name: 'เกลือ',          unit: 'กรัม', pack: 1000, price: 16,   note: '16 บาท/กก.' },
-    { id: 'ing-11', name: 'เบกกิ้งโซดา',   unit: 'กรัม', pack: 1000, price: 110,  note: '110 บาท/กก.' },
-    { id: 'ing-12', name: 'กลิ่นกล้วย',    unit: 'ครั้ง', pack: 1,    price: 5,    note: 'คิดเหมา 5 บาท/สูตร' }
+    { id: 'ing-01', name: 'แป้งเค้ก',      unit: 'กรัม', pack: 1000, price: 33,   note: '33 บาท/กก.', category: 'flour' },
+    { id: 'ing-02', name: 'แป้งข้าว',      unit: 'กรัม', pack: 1000, price: 36,   note: '36 บาท/กก. (ชื่อในสมุดอ่านไม่ชัด โปรดตรวจสอบ)', category: 'flour' },
+    { id: 'ing-03', name: 'น้ำตาลทราย',    unit: 'กรัม', pack: 1000, price: 27,   note: '27 บาท/กก.', category: 'sugar' },
+    { id: 'ing-04', name: 'กรดมะนาว',      unit: 'กรัม', pack: 1000, price: 0,    note: 'ในสมุดไม่ได้ระบุราคา', category: 'seasoning' },
+    { id: 'ing-05', name: 'ไข่ไก่',         unit: 'ฟอง',  pack: 1,    price: 5,    note: '5 บาท/ฟอง', category: 'other' },
+    { id: 'ing-06', name: 'น้ำมันรำข้าว',  unit: 'กรัม', pack: 5000, price: 345,  note: '345 บาท / 5 กก.', category: 'dairy-fat' },
+    { id: 'ing-07', name: 'เนยสด',          unit: 'กรัม', pack: 5000, price: 1510, note: '1,510 บาท / 5 กก.', category: 'dairy-fat' },
+    { id: 'ing-08', name: 'กล้วยหอมสุก',   unit: 'กรัม', pack: 1000, price: 45,   note: '45 บาท/กก.', category: 'other' },
+    { id: 'ing-09', name: 'ผงฟู',           unit: 'กรัม', pack: 1000, price: 129,  note: '129 บาท/กก.', category: 'seasoning' },
+    { id: 'ing-10', name: 'เกลือ',          unit: 'กรัม', pack: 1000, price: 16,   note: '16 บาท/กก.', category: 'seasoning' },
+    { id: 'ing-11', name: 'เบกกิ้งโซดา',   unit: 'กรัม', pack: 1000, price: 110,  note: '110 บาท/กก.', category: 'seasoning' },
+    { id: 'ing-12', name: 'กลิ่นกล้วย',    unit: 'ครั้ง', pack: 1,    price: 5,    note: 'คิดเหมา 5 บาท/สูตร', category: 'seasoning' }
   ],
 
   recipes: [
