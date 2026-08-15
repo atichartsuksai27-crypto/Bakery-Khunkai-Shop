@@ -28,6 +28,34 @@
   function catLabel(id) { return CATEGORY_LABEL[id] || CATEGORY_LABEL.other; }
   function catOf(ing) { return (ing && ing.category && CATEGORY_LABEL[ing.category]) ? ing.category : 'other'; }
 
+  /* หมวดบัญชีรายวัน — รายรับ/รายจ่าย */
+  var INCOME_CATS = [
+    { id: 'sale-store', label: 'ขายหน้าร้าน' },
+    { id: 'sale-online', label: 'ขายออนไลน์/เดลิเวอรี' },
+    { id: 'other-income', label: 'รายรับอื่นๆ' }
+  ];
+  var EXPENSE_CATS = [
+    { id: 'material', label: 'วัตถุดิบ' },
+    { id: 'packaging-cost', label: 'บรรจุภัณฑ์' },
+    { id: 'labor-cost', label: 'ค่าแรง' },
+    { id: 'utility', label: 'ค่าเช่า/น้ำ/ไฟ' },
+    { id: 'other-expense', label: 'รายจ่ายอื่นๆ' }
+  ];
+  var LEDGER_CAT_LABEL = {};
+  INCOME_CATS.concat(EXPENSE_CATS).forEach(function (c) { LEDGER_CAT_LABEL[c.id] = c.label; });
+  function ledgerCatLabel(id) { return LEDGER_CAT_LABEL[id] || '-'; }
+  function todayStr() {
+    var d = new Date();
+    var mm = String(d.getMonth() + 1).padStart(2, '0');
+    var dd = String(d.getDate()).padStart(2, '0');
+    return d.getFullYear() + '-' + mm + '-' + dd;
+  }
+  function thDate(iso) {
+    if (!iso) return '-';
+    var d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
   /* ============================================================ store */
 
   var state = {
@@ -35,7 +63,14 @@
     recipeId: null,
     ingFilter: 'all',
     targetPieces: 100,
-    data: null
+    data: null,
+    // --- สถานะเฉพาะหน้าบัญชีรายวัน: ไม่ persist ที่ไหนเลยทั้งสิ้น (ไม่ใช่ localStorage/cookie)
+    // รีเซ็ตเป็น false ทุกครั้งที่โหลดหน้าเว็บใหม่ และทุกครั้งที่สลับออกจากแท็บนี้
+    ledgerUnlocked: false,
+    ledgerVerifyError: '',
+    ledgerFormError: '',
+    ledgerDraftType: 'income',
+    ledgerDate: null // ตั้งค่าเป็นวันนี้ตอนเริ่มระบบ
   };
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -462,6 +497,141 @@
     return html;
   };
 
+  /* ---------------------------------------------------- บัญชีรายวัน */
+
+  /** คำนวณยอดคงเหลือสะสมทีละแถวตามหลักสมุดเงินสด (Cash Book):
+   *  ยอดคงเหลือ[i] = ยอดคงเหลือ[i-1] + รายรับ - รายจ่าย, เริ่มจากยอดยกมา */
+  function ledgerComputed() {
+    var L = state.data.ledger || { openingBalance: 0, entries: [] };
+    var sorted = (L.entries || []).slice().sort(function (a, b) {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return a.id < b.id ? -1 : 1; // id ขึ้นต้นด้วย timestamp base36 เรียงตามเวลาบันทึกได้
+    });
+    var bal = L.openingBalance || 0;
+    var totalIncome = 0, totalExpense = 0;
+    var rows = sorted.map(function (e) {
+      if (e.type === 'income') { bal += e.amount; totalIncome += e.amount; }
+      else { bal -= e.amount; totalExpense += e.amount; }
+      return { id: e.id, date: e.date, desc: e.desc, type: e.type, category: e.category, amount: e.amount, balance: bal };
+    });
+    return {
+      opening: L.openingBalance || 0,
+      rows: rows,
+      latestBalance: rows.length ? rows[rows.length - 1].balance : (L.openingBalance || 0),
+      totalIncome: totalIncome,
+      totalExpense: totalExpense,
+      net: totalIncome - totalExpense
+    };
+  }
+
+  function ledgerCategorySelect() {
+    var list = state.ledgerDraftType === 'income' ? INCOME_CATS : EXPENSE_CATS;
+    return '<select id="ldgCategory">' + list.map(function (c) {
+      return '<option value="' + c.id + '">' + esc(c.label) + '</option>';
+    }).join('') + '</select>';
+  }
+
+  function renderLedgerGate() {
+    return head('บัญชีรายวัน', 'ต้องยืนยันตัวตนก่อนเข้าใช้งานหน้านี้ทุกครั้ง') +
+      '<div style="display:flex;justify-content:center;padding:6px 0 30px">' +
+        '<div class="auth-card" style="max-width:380px">' +
+          '<div class="auth-logo"><img src="assets/img/logo-mark.png" alt="Bakery By Khunkai" ' +
+            'onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{textContent:\'🧁\',style:\'font-size:32px\'}))"></div>' +
+          '<h1>ยืนยันตัวตนอีกครั้ง</h1>' +
+          '<p class="auth-sub">กรอกรหัสพนักงานเดียวกับตอนเข้าสู่ระบบเว็บไซต์ เพื่อเข้าหน้าบัญชีรายวัน<br>' +
+            '(เพื่อความปลอดภัย ระบบไม่บันทึกรหัสไว้ ต้องกรอกใหม่ทุกครั้ง)</p>' +
+          (state.ledgerVerifyError ? '<div class="auth-error show">' + esc(state.ledgerVerifyError) + '</div>' : '') +
+          '<form class="auth-form" id="ldgGateForm" autocomplete="off">' +
+            '<div><label class="field" for="ldgUser">ชื่อผู้ใช้</label>' +
+              '<input type="text" id="ldgUser" autocomplete="off" required autofocus></div>' +
+            '<div><label class="field" for="ldgPass">รหัสผ่าน</label>' +
+              '<input type="password" id="ldgPass" autocomplete="off" required></div>' +
+            '<button type="submit" class="btn primary auth-submit" id="ldgGateBtn">ยืนยันและเข้าใช้งาน</button>' +
+          '</form>' +
+        '</div>' +
+      '</div>';
+  }
+
+  V.ledger = function () {
+    if (!state.ledgerUnlocked) return renderLedgerGate();
+
+    var all = ledgerComputed();
+    var isAll = state.ledgerDate === 'all';
+    var dateRows = isAll ? all.rows : all.rows.filter(function (r) { return r.date === state.ledgerDate; });
+
+    // ยอดคงเหลือสะสม ณ สิ้นวันที่เลือก (ถ้าวันนั้นไม่มีรายการ ใช้ยอดล่าสุดของวันก่อนหน้า)
+    var balanceAsOf = all.opening;
+    all.rows.forEach(function (r) { if (isAll || r.date <= state.ledgerDate) balanceAsOf = r.balance; });
+    var dayIncome = 0, dayExpense = 0;
+    dateRows.forEach(function (r) { if (r.type === 'income') dayIncome += r.amount; else dayExpense += r.amount; });
+
+    var html = head('บัญชีรายวัน', 'สมุดเงินสดประจำวัน — บันทึกรายรับ-รายจ่าย ระบบคำนวณยอดคงเหลือสะสมให้อัตโนมัติ');
+
+    html += '<div class="grid cols-4">' +
+      stat('ยอดคงเหลือสะสมล่าสุด', money(all.latestBalance) + ' <span class="sub">บาท</span>',
+        'ยอดยกมา + รายรับ - รายจ่ายทั้งหมด', all.latestBalance >= 0 ? 'good' : '') +
+      stat('รายรับสะสมทั้งหมด', money(all.totalIncome) + ' <span class="sub">บาท</span>', '') +
+      stat('รายจ่ายสะสมทั้งหมด', money(all.totalExpense) + ' <span class="sub">บาท</span>', '') +
+      stat('กำไร/ขาดทุนสะสม', money(all.net) + ' <span class="sub">บาท</span>', '', all.net >= 0 ? 'good' : 'bad') +
+    '</div>';
+
+    html += '<div class="card"><h2>บันทึกรายการใหม่</h2><div class="grid cols-4">' +
+        f('วันที่', '<input type="date" id="ldgDate" value="' + esc(isAll ? todayStr() : state.ledgerDate) + '">') +
+        f('รายการ', '<input type="text" id="ldgDesc" placeholder="เช่น ขายเค้กกล้วยหอม 10 กล่อง">') +
+        f('จำนวนเงิน (บาท)', '<input type="number" id="ldgAmount" min="0" step="0.01" placeholder="0.00">') +
+        f('หมวด', ledgerCategorySelect()) +
+      '</div>' +
+      '<div class="pill-list" style="margin-top:12px">' +
+        '<button type="button" class="pill' + (state.ledgerDraftType === 'income' ? ' is-active' : '') + '" data-act="ldg-type" data-type="income">💰 รายรับ</button>' +
+        '<button type="button" class="pill' + (state.ledgerDraftType === 'expense' ? ' is-active' : '') + '" data-act="ldg-type" data-type="expense">💸 รายจ่าย</button>' +
+      '</div>' +
+      (state.ledgerFormError ? '<div class="auth-error show" style="margin-top:12px">' + esc(state.ledgerFormError) + '</div>' : '') +
+      '<div class="actions" style="margin-top:14px"><button class="btn primary" data-act="ldg-add">+ บันทึกรายการ</button></div>' +
+    '</div>';
+
+    html += '<div class="card"><h2>รายการ</h2>' +
+      '<div class="grid cols-2" style="align-items:end;margin-bottom:14px">' +
+        f('ดูรายการวันที่', '<input type="date" data-bind="lfd" data-fkey="lfd" value="' + esc(isAll ? '' : state.ledgerDate) + '">') +
+        '<div class="actions">' +
+          '<button class="btn' + (isAll ? ' primary' : '') + '" data-act="ldg-showall">ดูทั้งหมด</button>' +
+          '<button class="btn' + (!isAll && state.ledgerDate === todayStr() ? ' primary' : '') + '" data-act="ldg-today">วันนี้</button>' +
+        '</div>' +
+      '</div>' +
+      (!isAll ? '<div class="grid cols-3" style="margin-bottom:14px">' +
+          stat('รายรับวันนี้', money(dayIncome) + ' <span class="sub">บาท</span>', '') +
+          stat('รายจ่ายวันนี้', money(dayExpense) + ' <span class="sub">บาท</span>', '') +
+          stat('คงเหลือสะสม ณ สิ้นวันนี้', money(balanceAsOf) + ' <span class="sub">บาท</span>', '', balanceAsOf >= 0 ? 'good' : 'bad') +
+        '</div>' : '') +
+      (dateRows.length
+        ? '<div class="table-wrap"><table><thead><tr>' +
+            '<th>วันที่</th><th>รายการ</th><th>หมวด</th><th class="num">รายรับ</th><th class="num">รายจ่าย</th><th class="num">คงเหลือสะสม</th><th></th>' +
+          '</tr></thead><tbody>' +
+          dateRows.map(function (r) {
+            return '<tr>' +
+              '<td>' + thDate(r.date) + '</td>' +
+              '<td>' + esc(r.desc) + '</td>' +
+              '<td class="muted">' + esc(ledgerCatLabel(r.category)) + '</td>' +
+              '<td class="num good">' + (r.type === 'income' ? money(r.amount) : '<span class="muted">-</span>') + '</td>' +
+              '<td class="num bad">' + (r.type === 'expense' ? money(r.amount) : '<span class="muted">-</span>') + '</td>' +
+              '<td class="num"><strong>' + money(r.balance) + '</strong></td>' +
+              '<td><button class="btn ghost sm" data-act="ldg-del" data-id="' + r.id + '">✕</button></td>' +
+            '</tr>';
+          }).join('') +
+          '</tbody></table></div>'
+        : '<p class="empty">ยังไม่มีรายการ' + (isAll ? '' : 'ในวันที่เลือก') + '</p>') +
+      '<div class="actions" style="margin-top:14px">' +
+        '<button class="btn" data-act="ldg-export">ดาวน์โหลดบัญชี (CSV)</button>' +
+        '<button class="btn" data-act="print">พิมพ์</button>' +
+      '</div>' +
+    '</div>';
+
+    html += '<div class="card"><h2>ยอดยกมา <span class="hint">ยอดคงเหลือก่อนเริ่มบันทึกในระบบนี้ (ถ้ามี)</span></h2>' +
+      f('ยอดยกมา (บาท)', inp('number', 'lob', all.opening, 'step="0.01"')) +
+    '</div>';
+
+    return html;
+  };
+
   /* ---------------------------------------------------- วัตถุดิบ */
   V.ingredients = function () {
     var list = state.data.ingredients;
@@ -617,6 +787,11 @@
   document.getElementById('nav').addEventListener('click', function (e) {
     var b = e.target.closest('.tab');
     if (!b) return;
+    // ออกจากหน้าบัญชีรายวัน -> ล็อกทันที ต้องกรอกรหัสใหม่ทุกครั้งที่กลับเข้ามา
+    if (state.view === 'ledger' && b.dataset.view !== 'ledger') {
+      state.ledgerUnlocked = false;
+      state.ledgerVerifyError = '';
+    }
     state.view = b.dataset.view;
     render();
   });
@@ -650,6 +825,8 @@
     else if (part[0] === 'i' && r) { r.items[+part[1]].ingredientId = val; }
     else if (part[0] === 'g') { state.data.ingredients[+part[2]][part[1]] = val; }
     else if (part[0] === 's') { state.targetPieces = val; render(); return; }
+    else if (part[0] === 'lfd') { state.ledgerDate = val || 'all'; render(); return; }
+    else if (part[0] === 'lob') { state.data.ledger.openingBalance = val; }
 
     save();
     render();
@@ -657,6 +834,35 @@
 
   app.addEventListener('change', function (e) {
     if (e.target.id === 'importFile' && e.target.files[0]) importFile(e.target.files[0]);
+  });
+
+  /* ยืนยันตัวตนก่อนเข้าหน้าบัญชีรายวัน — เรียก /api/verify-code ตรง ๆ ไม่มีการเก็บรหัสไว้ที่ไหนเลย */
+  app.addEventListener('submit', function (e) {
+    if (e.target.id !== 'ldgGateForm') return;
+    e.preventDefault();
+
+    var btn = document.getElementById('ldgGateBtn');
+    var username = document.getElementById('ldgUser').value;
+    var password = document.getElementById('ldgPass').value;
+    btn.disabled = true;
+    btn.textContent = 'กำลังตรวจสอบ…';
+
+    fetch('/api/verify-code', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: username, password: password })
+    })
+      .then(function (res) { return res.json().then(function (d) { return { ok: res.ok, data: d }; }); })
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.data && r.data.error ? r.data.error : 'ยืนยันตัวตนไม่สำเร็จ');
+        state.ledgerUnlocked = true;
+        state.ledgerVerifyError = '';
+        render();
+      })
+      .catch(function (err) {
+        state.ledgerVerifyError = err.message || 'ยืนยันตัวตนไม่สำเร็จ ลองใหม่อีกครั้ง';
+        render();
+      });
   });
 
   app.addEventListener('click', function (e) {
@@ -743,6 +949,49 @@
 
     } else if (act === 'print') {
       window.print();
+
+    } else if (act === 'ldg-type') {
+      state.ledgerDraftType = b.dataset.type;
+      state.ledgerFormError = '';
+      render();
+
+    } else if (act === 'ldg-add') {
+      var descEl = document.getElementById('ldgDesc');
+      var amtEl = document.getElementById('ldgAmount');
+      var dateEl = document.getElementById('ldgDate');
+      var catEl = document.getElementById('ldgCategory');
+      var desc = descEl ? descEl.value.trim() : '';
+      var amount = amtEl ? parseFloat(amtEl.value) : NaN;
+      var ldgDate = (dateEl && dateEl.value) ? dateEl.value : todayStr();
+      var category = catEl ? catEl.value : '';
+
+      if (!desc) { state.ledgerFormError = 'กรุณากรอกรายการ'; render(); return; }
+      if (!isFinite(amount) || amount <= 0) { state.ledgerFormError = 'กรุณากรอกจำนวนเงินให้ถูกต้อง (มากกว่า 0)'; render(); return; }
+      if (!category) { state.ledgerFormError = 'กรุณาเลือกหมวด'; render(); return; }
+
+      state.data.ledger.entries.push({
+        id: uid('ldg'), date: ldgDate, desc: desc,
+        type: state.ledgerDraftType, category: category, amount: amount
+      });
+      state.ledgerFormError = '';
+      state.ledgerDate = ldgDate;
+      save(); render(); toast('บันทึกรายการแล้ว');
+
+    } else if (act === 'ldg-del') {
+      if (!confirm('ลบรายการนี้?')) return;
+      state.data.ledger.entries = state.data.ledger.entries.filter(function (x) { return x.id !== b.dataset.id; });
+      save(); render();
+
+    } else if (act === 'ldg-showall') {
+      state.ledgerDate = 'all';
+      render();
+
+    } else if (act === 'ldg-today') {
+      state.ledgerDate = todayStr();
+      render();
+
+    } else if (act === 'ldg-export') {
+      exportLedgerCsv();
     }
   });
 
@@ -793,6 +1042,26 @@
     download('ใบเตรียมของ-' + r.name + '.csv', csv(rows), 'text/csv;charset=utf-8');
   }
 
+  function exportLedgerCsv() {
+    var all = ledgerComputed();
+    var rows = [
+      ['บัญชีรายวัน — Bakery By Khunkai'],
+      ['ยอดยกมา (บาท)', all.opening.toFixed(2)],
+      [],
+      ['วันที่', 'รายการ', 'หมวด', 'รายรับ', 'รายจ่าย', 'คงเหลือสะสม']
+    ];
+    all.rows.forEach(function (r) {
+      rows.push([
+        r.date, r.desc, ledgerCatLabel(r.category),
+        r.type === 'income' ? r.amount.toFixed(2) : '',
+        r.type === 'expense' ? r.amount.toFixed(2) : '',
+        r.balance.toFixed(2)
+      ]);
+    });
+    rows.push(['รวม', '', '', all.totalIncome.toFixed(2), all.totalExpense.toFixed(2), all.latestBalance.toFixed(2)]);
+    download('บัญชีรายวัน.csv', csv(rows), 'text/csv;charset=utf-8');
+  }
+
   function importFile(file) {
     var fr = new FileReader();
     fr.onload = function () {
@@ -801,6 +1070,7 @@
         if (!d.ingredients || !d.recipes) throw new Error('รูปแบบไฟล์ไม่ถูกต้อง');
         state.data = d;
         if (!d.multipliers) d.multipliers = clone(window.SEED_DATA.multipliers);
+        if (!d.ledger || !Array.isArray(d.ledger.entries)) d.ledger = { openingBalance: 0, entries: [] };
         state.recipeId = null;
         save(); render(); toast('นำเข้าข้อมูลเรียบร้อย');
       } catch (err) {
@@ -814,13 +1084,20 @@
 
   // 1) วาดหน้าจอทันทีด้วยข้อมูลที่แคชไว้ในเครื่อง (ให้เปิดเว็บได้ไวแม้เน็ตช้า)
   state.data = loadLocal();
+  if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
+    state.data.ledger = { openingBalance: 0, entries: [] };
+  }
   if (state.data.recipes.length) state.recipeId = state.data.recipes[0].id;
+  state.ledgerDate = todayStr();
   render();
 
   // 2) แล้วค่อยซิงก์กับฐานข้อมูลกลาง (Cloudflare D1) เพื่อให้เห็นข้อมูลล่าสุดที่ทุกคนแก้ร่วมกัน
   loadRemote().then(function (remote) {
     if (!remote) { stamp(); return; }
     state.data = remote;
+    if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
+      state.data.ledger = { openingBalance: 0, entries: [] };
+    }
     cacheLocal();
     if (!state.data.recipes.some(function (r) { return r.id === state.recipeId; })) {
       state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;

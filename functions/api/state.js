@@ -2,11 +2,20 @@
  * Cloudflare Pages Function — /api/state
  * แหล่งข้อมูลกลางเดียวสำหรับทั้งร้าน (Cloudflare D1)
  * GET  -> คืนข้อมูลปัจจุบัน (ถ้ายังไม่มีแถวในฐานข้อมูล จะ seed ให้อัตโนมัติจากค่าตั้งต้น)
- * PUT  -> บันทึกข้อมูลทั้งชุด (ingredients + recipes + multipliers)
+ * PUT  -> บันทึกข้อมูลทั้งชุด (ingredients + recipes + multipliers + ledger)
  */
 import SEED from '../../seed.json';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024; // กันไฟล์ผิดปกติขนาดใหญ่เกินไป
+const DEFAULT_LEDGER = { openingBalance: 0, entries: [] };
+
+function normalizeLedger(ledger) {
+  if (!ledger || typeof ledger !== 'object' || !Array.isArray(ledger.entries)) return DEFAULT_LEDGER;
+  return {
+    openingBalance: typeof ledger.openingBalance === 'number' ? ledger.openingBalance : 0,
+    entries: ledger.entries
+  };
+}
 
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
@@ -27,7 +36,8 @@ async function seedIfEmpty(db) {
   const payload = JSON.stringify({
     ingredients: SEED.ingredients,
     recipes: SEED.recipes,
-    multipliers: SEED.multipliers
+    multipliers: SEED.multipliers,
+    ledger: normalizeLedger(SEED.ledger)
   });
   await db
     .prepare(
@@ -73,7 +83,8 @@ export async function onRequestPut(ctx) {
   const payload = JSON.stringify({
     ingredients: body.ingredients,
     recipes: body.recipes,
-    multipliers: Array.isArray(body.multipliers) ? body.multipliers : SEED.multipliers
+    multipliers: Array.isArray(body.multipliers) ? body.multipliers : SEED.multipliers,
+    ledger: normalizeLedger(body.ledger)
   });
 
   await db

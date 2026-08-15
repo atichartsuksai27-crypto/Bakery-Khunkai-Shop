@@ -46,5 +46,7 @@ window.SEED_DATA = {
     }
   ],
 
-  multipliers: [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5]
+  multipliers: [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5],
+
+  ledger: { openingBalance: 0, entries: [] }
 };

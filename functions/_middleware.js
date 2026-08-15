@@ -6,7 +6,7 @@
 import { readSession } from './_auth.js';
 
 const PROTECTED_EXACT = new Set(['/', '/index.html']);
-const PROTECTED_PREFIX = ['/api/state'];
+const PROTECTED_PREFIX = ['/api/state', '/api/verify-code'];
 
 export async function onRequest(ctx) {
   const { request, env, next } = ctx;
