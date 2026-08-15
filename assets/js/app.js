@@ -538,14 +538,12 @@
           '<div class="auth-logo"><img src="assets/img/logo-mark.png" alt="Bakery By Khunkai" ' +
             'onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{textContent:\'🧁\',style:\'font-size:32px\'}))"></div>' +
           '<h1>ยืนยันตัวตนอีกครั้ง</h1>' +
-          '<p class="auth-sub">กรอกรหัสพนักงานเดียวกับตอนเข้าสู่ระบบเว็บไซต์ เพื่อเข้าหน้าบัญชีรายวัน<br>' +
+          '<p class="auth-sub">กรอกรหัสผ่านเดียวกับตอนเข้าสู่ระบบเว็บไซต์ เพื่อเข้าหน้าบัญชีรายวัน<br>' +
             '(เพื่อความปลอดภัย ระบบไม่บันทึกรหัสไว้ ต้องกรอกใหม่ทุกครั้ง)</p>' +
           (state.ledgerVerifyError ? '<div class="auth-error show">' + esc(state.ledgerVerifyError) + '</div>' : '') +
           '<form class="auth-form" id="ldgGateForm" autocomplete="off">' +
-            '<div><label class="field" for="ldgUser">ชื่อผู้ใช้</label>' +
-              '<input type="text" id="ldgUser" autocomplete="off" required autofocus></div>' +
             '<div><label class="field" for="ldgPass">รหัสผ่าน</label>' +
-              '<input type="password" id="ldgPass" autocomplete="off" required></div>' +
+              '<input type="password" id="ldgPass" autocomplete="off" required autofocus></div>' +
             '<button type="submit" class="btn primary auth-submit" id="ldgGateBtn">ยืนยันและเข้าใช้งาน</button>' +
           '</form>' +
         '</div>' +
@@ -842,7 +840,6 @@
     e.preventDefault();
 
     var btn = document.getElementById('ldgGateBtn');
-    var username = document.getElementById('ldgUser').value;
     var password = document.getElementById('ldgPass').value;
     btn.disabled = true;
     btn.textContent = 'กำลังตรวจสอบ…';
@@ -850,7 +847,7 @@
     fetch('/api/verify-code', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: username, password: password })
+      body: JSON.stringify({ password: password })
     })
       .then(function (res) { return res.json().then(function (d) { return { ok: res.ok, data: d }; }); })
       .then(function (r) {
