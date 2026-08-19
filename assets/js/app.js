@@ -12,6 +12,12 @@
   var apiAvailable = null; // null = ยังไม่รู้, true/false = รู้แล้ว
   var saveTimer = null;
   var savePending = false;
+  var dirty = false; // true = มีการแก้ไขที่ยังไม่ยืนยันว่าขึ้น D1 สำเร็จ (รอ retry อยู่)
+  var RECONNECT_PING_MS = 12000; // ห่างกันเท่าไรตอนพยายามเชื่อมต่อ D1 ใหม่หลังหลุด
+  var pendingSuccessMsg = null; // ข้อความ toast ที่ "รอ" แสดง จนกว่าจะรู้ผล PUT จริง (ไม่ใช่ตอนคลิกปุ่ม)
+  var conflict = null; // ข้อมูลชุดล่าสุดจากเซิร์ฟเวอร์ ตอนเจอ version ชนกัน (409) — ไม่ null = มี conflict ค้างอยู่ ห้ามบันทึกซ้ำจนกว่าผู้ใช้จะเลือก
+  var lastSyncAt = Date.now(); // เวลาที่ sync กับ D1 สำเร็จล่าสุด (GET หรือ PUT ที่ผ่าน) ใช้วัดว่า "ทิ้งหน้าไว้เฉย ๆ" นานแค่ไหน
+  var IDLE_REFRESH_MS = 15 * 60 * 1000; // เกินนี้แล้วยังไม่เคย sync -> บังคับโหลดข้อมูลล่าสุดก่อนยอมให้บันทึกครั้งต่อไป
 
   /* หมวดหมู่วัตถุดิบ — รายการตายตัว เรียงตามลำดับที่กำหนด */
   var CATEGORIES = [
@@ -44,11 +50,23 @@
   var LEDGER_CAT_LABEL = {};
   INCOME_CATS.concat(EXPENSE_CATS).forEach(function (c) { LEDGER_CAT_LABEL[c.id] = c.label; });
   function ledgerCatLabel(id) { return LEDGER_CAT_LABEL[id] || '-'; }
+  /** วันที่ "วันนี้" แบบ fix เป็นเวลาไทย (Asia/Bangkok, UTC+7 คงที่ ไม่มี DST) เสมอ
+   *  ไม่ใช้ getFullYear()/getMonth()/getDate() ตรง ๆ เพราะค่านั้นอิงตาม timezone ของอุปกรณ์
+   *  ถ้าเครื่องไหนตั้งเวลาเป็น UTC (พบได้บนแท็บเล็ต/เครื่อง POS ที่เพิ่ง reset) ช่วง 00:00–06:59 น.
+   *  เวลาไทยจะยังนับเป็น "เมื่อวาน" ตาม UTC ทำให้รายการบัญชีถูกเก็บผิดวัน — ใช้ Intl.DateTimeFormat
+   *  บังคับ timezone ตรง ๆ แทน จึงได้ผลลัพธ์เดียวกันทุกเครื่องไม่ว่าเครื่องนั้นจะตั้งเวลาไว้อย่างไร */
   function todayStr() {
-    var d = new Date();
-    var mm = String(d.getMonth() + 1).padStart(2, '0');
-    var dd = String(d.getDate()).padStart(2, '0');
-    return d.getFullYear() + '-' + mm + '-' + dd;
+    var parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Bangkok',
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(new Date());
+    var y = '0000', m = '01', d = '01';
+    parts.forEach(function (p) {
+      if (p.type === 'year') y = p.value;
+      else if (p.type === 'month') m = p.value;
+      else if (p.type === 'day') d = p.value;
+    });
+    return y + '-' + m + '-' + d;
   }
   function thDate(iso) {
     if (!iso) return '-';
@@ -102,6 +120,7 @@
       .then(function (d) {
         if (!d || !d.ingredients || !d.recipes) throw new Error('payload ไม่ถูกต้อง');
         apiAvailable = true;
+        lastSyncAt = Date.now();
         return d;
       })
       .catch(function (e) {
@@ -111,18 +130,63 @@
       });
   }
 
-  /** เรียกบันทึกแบบหน่วงเวลา (debounce) กันยิง API ถี่เกินไปตอนพิมพ์ */
-  function save() {
+  /** เรียกบันทึกแบบหน่วงเวลา (debounce) กันยิง API ถี่เกินไปตอนพิมพ์
+   *  ใส่ msg ถ้าอยากให้ขึ้น toast "สำเร็จ" — แต่ toast จะขึ้นก็ต่อเมื่อ PUT ไปถึง D1 จริงและสำเร็จเท่านั้น
+   *  ไม่ใช่ทันทีที่เรียกฟังก์ชันนี้ (เดิมพลาดตรงนี้ ทำให้ผู้ใช้เห็น "สำเร็จ" ทั้งที่ยังไม่ได้ยิง PUT เลยด้วยซ้ำ) */
+  function save(msg) {
+    if (msg) pendingSuccessMsg = msg;
     state.data.updatedAt = new Date().toISOString();
     cacheLocal();
+    dirty = true;
     stamp();
     savePending = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveRemote, 600);
   }
 
+  /** จุดเริ่มของการบันทึกจริง — ยิง PUT ขึ้น D1 เสมอไม่ว่า apiAvailable จะเป็นอะไรอยู่ก่อนหน้า
+   *  (เดิมถ้าเคย fail ครั้งเดียวจะไม่ลองอีกเลยจนกว่าจะ reload หน้า — แก้แล้ว)
+   *  แต่ถ้าทิ้งหน้าไว้เฉย ๆ เกิน 15 นาทีโดยไม่เคย sync เลย จะบังคับเช็คข้อมูลล่าสุดก่อน ไม่ยอมยิง PUT ทับตรง ๆ
+   *  และถ้ามี conflict ค้างอยู่ (409 ไปแล้วรอบก่อน) จะไม่ยิงซ้ำจนกว่าผู้ใช้จะกดโหลดข้อมูลล่าสุด */
   function saveRemote() {
-    if (apiAvailable === false) { savePending = false; stamp(); return; }
+    if (conflict) return;
+    // ไม่มี stateVersion เลย (เช่น save() หลุดมาก่อน loadRemote() ครั้งแรกจะเสร็จ) หรือทิ้งหน้าไว้เฉยเกิน 15 นาที
+    // -> ต้องเช็คข้อมูลล่าสุดก่อนเสมอ ห้ามยิง PUT ทับตรง ๆ โดยไม่รู้ version ที่แท้จริง
+    if (!state.data.stateVersion || Date.now() - lastSyncAt > IDLE_REFRESH_MS) { refreshBeforeStaleSave(); return; }
+    doPutNow();
+  }
+
+  /** ทิ้งหน้าไว้นานเกิน 15 นาที -> เช็คก่อนว่า version ที่เราถืออยู่ยังตรงกับเซิร์ฟเวอร์ไหม
+   *  ตรง -> ยิง PUT ต่อได้เลย, ไม่ตรง -> มีคนแก้ไปแล้วระหว่างที่เราไม่ได้ใช้งาน ต้องแจ้งเตือนแทนที่จะเขียนทับ */
+  function refreshBeforeStaleSave() {
+    fetch(API, { cache: 'no-store' })
+      .then(function (res) {
+        if (res.status === 401) { location.href = '/login.html'; throw new Error('session หมดอายุ'); }
+        if (!res.ok) throw new Error('status ' + res.status);
+        return res.json();
+      })
+      .then(function (server) {
+        apiAvailable = true;
+        lastSyncAt = Date.now();
+        if (server.stateVersion === state.data.stateVersion) {
+          doPutNow(); // ไม่มีใครแก้ไขอะไรระหว่างที่เราไม่ได้ใช้งาน -> ปลอดภัย บันทึกต่อได้
+        } else {
+          savePending = false;
+          conflict = server;
+          stamp();
+          showConflictAlert();
+        }
+      })
+      .catch(function (e) {
+        apiAvailable = false;
+        savePending = false;
+        console.warn('ตรวจสอบข้อมูลล่าสุดก่อนบันทึกไม่สำเร็จ:', e.message);
+        stamp();
+        showSaveError('เชื่อมต่อฐานข้อมูลกลางไม่สำเร็จตอนตรวจข้อมูลล่าสุด — ระบบจะลองใหม่ให้อัตโนมัติ');
+      });
+  }
+
+  function doPutNow() {
     fetch(API, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -130,21 +194,60 @@
     })
       .then(function (res) {
         if (res.status === 401) { location.href = '/login.html'; throw new Error('session หมดอายุ'); }
+        if (res.status === 409) {
+          return res.json().then(function (d) {
+            var err = new Error('version ไม่ตรงกับเซิร์ฟเวอร์ (conflict)');
+            err.conflict = true;
+            err.serverData = d.current;
+            throw err;
+          });
+        }
         if (!res.ok) throw new Error('status ' + res.status);
         return res.json();
       })
       .then(function (r) {
         apiAvailable = true;
+        lastSyncAt = Date.now();
         state.data.updatedAt = r.updatedAt || state.data.updatedAt;
+        state.data.stateVersion = r.stateVersion || state.data.stateVersion;
+        dirty = false;
         savePending = false;
         stamp();
+        hideSaveError();
+        if (pendingSuccessMsg) { toast(pendingSuccessMsg); pendingSuccessMsg = null; }
       })
       .catch(function (e) {
-        apiAvailable = false;
         savePending = false;
+        if (e && e.conflict) {
+          apiAvailable = true; // เชื่อมต่อได้ปกติ แค่ข้อมูลชนกัน ไม่ใช่ปัญหาเน็ต
+          lastSyncAt = Date.now();
+          conflict = e.serverData;
+          stamp();
+          showConflictAlert();
+          return;
+        }
+        apiAvailable = false;
         console.warn('บันทึกขึ้นฐานข้อมูลกลางไม่สำเร็จ:', e.message);
         stamp();
+        // เก็บ pendingSuccessMsg ไว้ก่อน (ยังไม่เคลียร์) เผื่อ retry รอบหน้าสำเร็จ จะได้ยัง toast ให้เห็นว่าสำเร็จจริง
+        showSaveError('บันทึกขึ้นฐานข้อมูลกลางไม่สำเร็จ — ข้อมูลยังอยู่ในเครื่องนี้ ระบบจะลองส่งใหม่ให้อัตโนมัติ');
       });
+  }
+
+  /** เช็คการเชื่อมต่อ D1 เป็นระยะ ๆ ขณะออฟไลน์ — พอกลับมาต่อได้ ยิงข้อมูลที่ค้างอยู่ (dirty) ขึ้นทันที
+   *  ไม่ต้องรอผู้ใช้พิมพ์อะไรต่อ และไม่ต้องพึ่งการ reload หน้าเว็บ */
+  function pingReconnect() {
+    if (apiAvailable !== false) return; // ต่อได้อยู่แล้ว ไม่ต้อง ping ซ้ำ
+    fetch(API, { method: 'GET', cache: 'no-store' })
+      .then(function (res) {
+        if (res.status === 401) { location.href = '/login.html'; return; }
+        if (!res.ok) throw new Error('status ' + res.status);
+        apiAvailable = true;
+        lastSyncAt = Date.now();
+        stamp();
+        if (dirty && !conflict) saveRemote(); // มีข้อมูลค้างจากตอนออฟไลน์ (และไม่ได้ติด conflict ค้างอยู่) -> ส่งทันที
+      })
+      .catch(function () { /* ยังต่อ D1 ไม่ได้ รอ ping รอบหน้า */ });
   }
 
   function stamp() {
@@ -186,6 +289,34 @@
     t.hidden = false;
     clearTimeout(t._timer);
     t._timer = setTimeout(function () { t.hidden = true; }, 2200);
+  }
+
+  /** แจ้งเตือน "บันทึกไม่สำเร็จ" แบบเด่นชัด (แถบแดงกลางจอด้านบน) — ต่างจาก toast ปกติที่ใช้แจ้งสำเร็จเฉย ๆ
+   *  ใช้ role="alert" ให้ screen reader อ่านทันที และอยู่นานกว่า toast ทั่วไปเพราะเป็นเรื่องสำคัญกว่า */
+  function showSaveError(msg) {
+    var el = document.getElementById('saveAlert');
+    if (!el) return;
+    el.textContent = msg; // ตั้ง textContent ล้าง innerHTML เดิมไปในตัว (เผื่อก่อนหน้าเป็นแถบ conflict ที่มีปุ่มอยู่)
+    el.hidden = false;
+    clearTimeout(el._timer);
+    el._timer = setTimeout(function () { el.hidden = true; }, 6000);
+  }
+  function hideSaveError() {
+    var el = document.getElementById('saveAlert');
+    if (!el) return;
+    clearTimeout(el._timer);
+    el.hidden = true;
+  }
+  /** แจ้งเตือน "มีคนอื่นบันทึกทับไปก่อนแล้ว" — ไม่ auto-hide เพราะต้องรอให้ผู้ใช้ตัดสินใจกดปุ่มเอง
+   *  ปุ่มในนี้ไม่ได้อยู่ใต้ #app จึงต้องมี listener แยกต่างหาก (ผูกไว้ท้ายไฟล์) */
+  function showConflictAlert() {
+    var el = document.getElementById('saveAlert');
+    if (!el) return;
+    clearTimeout(el._timer);
+    el.innerHTML = 'มีการเปลี่ยนแปลงข้อมูลจากเครื่องอื่นระหว่างที่คุณกำลังแก้ไข — ระบบไม่ได้บันทึกทับให้ เพื่อป้องกันข้อมูลหาย' +
+      '<br><button type="button" class="btn sm" id="conflictReloadBtn" ' +
+      'style="margin-top:8px;background:#fff;color:var(--bad);border-color:#fff">โหลดข้อมูลล่าสุด</button>';
+    el.hidden = false;
   }
 
   /* ============================================================ calc */
@@ -804,6 +935,25 @@
     });
   }
 
+  /* ปุ่ม "โหลดข้อมูลล่าสุด" ในแถบแจ้งเตือน conflict — อยู่นอก #app จึงต้องผูก listener แยกต่างหาก */
+  var saveAlertEl = document.getElementById('saveAlert');
+  if (saveAlertEl) {
+    saveAlertEl.addEventListener('click', function (e) {
+      if (e.target.id !== 'conflictReloadBtn' || !conflict) return;
+      if (!confirm('การโหลดข้อมูลล่าสุดจะทิ้งการแก้ไขที่ยังไม่ได้บันทึกในเครื่องนี้ทิ้งไป ต้องการดำเนินการต่อไหม?')) return;
+      state.data = conflict;
+      conflict = null;
+      dirty = false;
+      cacheLocal();
+      hideSaveError();
+      if (!state.data.recipes.some(function (r) { return r.id === state.recipeId; })) {
+        state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;
+      }
+      render();
+      toast('โหลดข้อมูลล่าสุดแล้ว');
+    });
+  }
+
   /* ผูกค่าจาก input กลับเข้า model */
   app.addEventListener('input', function (e) {
     var el = e.target;
@@ -881,7 +1031,7 @@
       state.data.recipes.push(nr);
       state.recipeId = nr.id;
       state.view = 'recipes';
-      save(); render(); toast('เพิ่มสูตรใหม่แล้ว');
+      save('เพิ่มสูตรใหม่แล้ว'); render();
 
     } else if (act === 'dup-recipe' && r) {
       var cp = clone(r);
@@ -889,13 +1039,13 @@
       cp.name = r.name + ' (สำเนา)';
       state.data.recipes.push(cp);
       state.recipeId = cp.id;
-      save(); render(); toast('ทำสำเนาแล้ว');
+      save('ทำสำเนาแล้ว'); render();
 
     } else if (act === 'del-recipe' && r) {
       if (!confirm('ลบสูตร “' + r.name + '” ?')) return;
       state.data.recipes = state.data.recipes.filter(function (x) { return x.id !== r.id; });
       state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;
-      save(); render(); toast('ลบสูตรแล้ว');
+      save('ลบสูตรแล้ว'); render();
 
     } else if (act === 'add-item' && r) {
       if (!state.data.ingredients.length) return toast('ยังไม่มีวัตถุดิบในคลัง');
@@ -909,7 +1059,7 @@
     } else if (act === 'add-ing') {
       var newCat = state.ingFilter !== 'all' ? state.ingFilter : 'other';
       state.data.ingredients.push({ id: uid('ing'), name: 'วัตถุดิบใหม่', unit: 'กรัม', pack: 1000, price: 0, note: '', category: newCat });
-      save(); render(); toast('เพิ่มวัตถุดิบแล้ว');
+      save('เพิ่มวัตถุดิบแล้ว'); render();
 
     } else if (act === 'filter-ing') {
       state.ingFilter = b.dataset.cat;
@@ -940,9 +1090,11 @@
 
     } else if (act === 'reset') {
       if (!confirm('รีเซ็ตข้อมูลทั้งหมดกลับเป็นค่าตั้งต้น?')) return;
+      var keepVersionReset = state.data.stateVersion; // รักษา stateVersion ปัจจุบันไว้ ไม่งั้นระบบกันเขียนทับจะปฏิเสธการบันทึกนี้
       state.data = clone(window.SEED_DATA);
+      state.data.stateVersion = keepVersionReset;
       state.recipeId = null;
-      save(); render(); toast('รีเซ็ตเรียบร้อย');
+      save('รีเซ็ตเรียบร้อย'); render();
 
     } else if (act === 'print') {
       window.print();
@@ -972,7 +1124,7 @@
       });
       state.ledgerFormError = '';
       state.ledgerDate = ldgDate;
-      save(); render(); toast('บันทึกรายการแล้ว');
+      save('บันทึกรายการแล้ว'); render();
 
     } else if (act === 'ldg-del') {
       if (!confirm('ลบรายการนี้?')) return;
@@ -1065,11 +1217,15 @@
       try {
         var d = JSON.parse(fr.result);
         if (!d.ingredients || !d.recipes) throw new Error('รูปแบบไฟล์ไม่ถูกต้อง');
+        // ใช้ stateVersion ปัจจุบันที่ระบบรู้จักอยู่แล้ว ไม่ใช่ค่าที่ติดมากับไฟล์ backup (อาจเก่ากว่ามาก)
+        // ไม่งั้นระบบกันเขียนทับจะปฏิเสธการบันทึกนี้ทันที
+        var keepVersionImport = state.data.stateVersion;
         state.data = d;
+        state.data.stateVersion = keepVersionImport;
         if (!d.multipliers) d.multipliers = clone(window.SEED_DATA.multipliers);
         if (!d.ledger || !Array.isArray(d.ledger.entries)) d.ledger = { openingBalance: 0, entries: [] };
         state.recipeId = null;
-        save(); render(); toast('นำเข้าข้อมูลเรียบร้อย');
+        save('นำเข้าข้อมูลเรียบร้อย'); render();
       } catch (err) {
         alert('นำเข้าไม่สำเร็จ: ' + err.message);
       }
@@ -1101,4 +1257,7 @@
     }
     render();
   });
+
+  // 3) เช็คว่า D1 กลับมาต่อได้หรือยังเป็นระยะ ๆ ตลอดเวลาที่เปิดหน้าเว็บทิ้งไว้
+  setInterval(pingReconnect, RECONNECT_PING_MS);
 })();
