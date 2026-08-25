@@ -6,6 +6,12 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["server.js"],
       "port": 5173
+    },
+    {
+      "name": "bakery-pages-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["wrangler", "pages", "dev", ".", "--port=8788"],
+      "port": 8788
     }
   ]
 }

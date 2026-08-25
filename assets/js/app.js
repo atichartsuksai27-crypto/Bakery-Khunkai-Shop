@@ -109,6 +109,30 @@
     catch (e) { /* เปิดจากไฟล์โดยตรงบางเบราว์เซอร์จะบันทึกไม่ได้ — ใช้งานต่อได้ */ }
   }
 
+  /* ทำเครื่องหมาย "มีการแก้ไขที่ยังไม่ยืนยันว่าขึ้น D1 สำเร็จ" ไว้ใน localStorage (ไม่ใช่แค่ตัวแปรในหน่วยความจำ)
+   * เพื่อให้รอดจากการปิดแท็บ/เครื่องรีสตาร์ท/เบราว์เซอร์ suspend แท็บพื้นหลังกลางคัน — ถ้าไม่มีตัวนี้ พอเปิดหน้าเว็บ
+   * ใหม่วันถัดไป loadRemote() จะทับ state.data ด้วยข้อมูลจากเซิร์ฟเวอร์ทันทีโดยไม่รู้เลยว่ามีของค้างอยู่ในเครื่อง
+   * ทำให้แก้ไขล่าสุดของเมื่อวาน "หายไป" แบบเงียบ ๆ (นี่คือสาเหตุจริงของปัญหา "เปิดมาพรุ่งนี้ข้อมูลหาย") */
+  var STORAGE_PENDING_KEY = STORAGE_KEY + '-pending';
+  var PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // เก่ากว่านี้ไม่น่าเชื่อถือแล้ว ปล่อยผ่านแทนที่จะพยายามกู้
+
+  function markPendingLocal(isPending) {
+    try {
+      if (isPending) localStorage.setItem(STORAGE_PENDING_KEY, String(Date.now()));
+      else localStorage.removeItem(STORAGE_PENDING_KEY);
+    } catch (e) { /* localStorage ใช้ไม่ได้ก็ปล่อยผ่าน ไม่ใช่ปัญหาคอขวด */ }
+  }
+
+  function readPendingLocal() {
+    try {
+      var raw = localStorage.getItem(STORAGE_PENDING_KEY);
+      if (!raw) return false;
+      var at = Number(raw);
+      if (!isFinite(at) || Date.now() - at > PENDING_MAX_AGE_MS) { markPendingLocal(false); return false; }
+      return true;
+    } catch (e) { return false; }
+  }
+
   /** ดึงข้อมูลกลางจาก Cloudflare D1 — คืน null ถ้าเรียกไม่สำเร็จ (ให้ใช้ข้อมูลในเครื่องแทน) */
   function loadRemote() {
     return fetch(API, { cache: 'no-store' })
@@ -137,6 +161,7 @@
     if (msg) pendingSuccessMsg = msg;
     state.data.updatedAt = new Date().toISOString();
     cacheLocal();
+    markPendingLocal(true);
     dirty = true;
     stamp();
     savePending = true;
@@ -211,6 +236,8 @@
         state.data.updatedAt = r.updatedAt || state.data.updatedAt;
         state.data.stateVersion = r.stateVersion || state.data.stateVersion;
         dirty = false;
+        markPendingLocal(false);
+        cacheLocal(); // อัปเดต stateVersion/updatedAt ล่าสุดลง cache ด้วย ไม่ใช่แค่ในหน่วยความจำ
         savePending = false;
         stamp();
         hideSaveError();
@@ -944,6 +971,7 @@
       state.data = conflict;
       conflict = null;
       dirty = false;
+      markPendingLocal(false); // ผู้ใช้เลือกทิ้งของที่ค้างไว้เองแล้ว ไม่งั้นบูตครั้งหน้าจะยังคิดว่ามีของค้างอยู่
       cacheLocal();
       hideSaveError();
       if (!state.data.recipes.some(function (r) { return r.id === state.recipeId; })) {
@@ -1242,11 +1270,35 @@
   }
   if (state.data.recipes.length) state.recipeId = state.data.recipes[0].id;
   state.ledgerDate = todayStr();
+  // มีการแก้ไขจากเซสชันก่อนหน้าที่ "ยังไม่ยืนยันว่าบันทึกขึ้น D1 สำเร็จ" ค้างอยู่ไหม (เช่น ปิดแท็บ/เครื่องรีสตาร์ท
+  // /เบราว์เซอร์ suspend แท็บพื้นหลังระหว่างกำลังจะบันทึก) — ถ้ามี ต้องจัดการให้ครบก่อนค่อยยอมให้ทับด้วยข้อมูลเซิร์ฟเวอร์
+  var hadPendingSave = readPendingLocal();
+  if (hadPendingSave) dirty = true;
   render();
 
   // 2) แล้วค่อยซิงก์กับฐานข้อมูลกลาง (Cloudflare D1) เพื่อให้เห็นข้อมูลล่าสุดที่ทุกคนแก้ร่วมกัน
   loadRemote().then(function (remote) {
     if (!remote) { stamp(); return; }
+
+    if (hadPendingSave && state.data.stateVersion) {
+      // ห้ามทับ state.data ด้วยข้อมูลจากเซิร์ฟเวอร์เงียบ ๆ เด็ดขาด — ต้องเช็คก่อนว่าปลอดภัยจริงไหม
+      if (remote.stateVersion === state.data.stateVersion) {
+        // เซิร์ฟเวอร์ยังเป็น version เดิมตั้งแต่ตอนนั้น -> ไม่มีใครแตะต้องอะไรเลย ส่งของที่ค้างไว้ขึ้นได้ทันที
+        lastSyncAt = Date.now();
+        doPutNow();
+      } else {
+        // มีคนอื่นบันทึกไปแล้วระหว่างที่แท็บนี้ปิด/ไม่ได้ใช้งาน -> คงข้อมูลในเครื่อง (ที่ยังเห็นบนจอ) ไว้ก่อน
+        // แล้วแจ้งเตือนให้ผู้ใช้เลือกเอง แทนที่จะทิ้งการแก้ไขของเขาไปเงียบ ๆ
+        conflict = remote;
+        apiAvailable = true;
+        lastSyncAt = Date.now();
+        stamp();
+        showConflictAlert();
+      }
+      render();
+      return;
+    }
+
     state.data = remote;
     if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
       state.data.ledger = { openingBalance: 0, entries: [] };
