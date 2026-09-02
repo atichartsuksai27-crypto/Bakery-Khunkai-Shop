@@ -82,10 +82,6 @@
     ingFilter: 'all',
     targetPieces: 100,
     data: null,
-    // --- สถานะเฉพาะหน้าบัญชีรายวัน: ไม่ persist ที่ไหนเลยทั้งสิ้น (ไม่ใช่ localStorage/cookie)
-    // รีเซ็ตเป็น false ทุกครั้งที่โหลดหน้าเว็บใหม่ และทุกครั้งที่สลับออกจากแท็บนี้
-    ledgerUnlocked: false,
-    ledgerVerifyError: '',
     ledgerFormError: '',
     ledgerDraftType: 'income',
     ledgerDate: null // ตั้งค่าเป็นวันนี้ตอนเริ่มระบบ
@@ -137,7 +133,6 @@
   function loadRemote() {
     return fetch(API, { cache: 'no-store' })
       .then(function (res) {
-        if (res.status === 401) { location.href = '/login.html'; throw new Error('session หมดอายุ'); }
         if (!res.ok) throw new Error('status ' + res.status);
         return res.json();
       })
@@ -186,7 +181,6 @@
   function refreshBeforeStaleSave() {
     fetch(API, { cache: 'no-store' })
       .then(function (res) {
-        if (res.status === 401) { location.href = '/login.html'; throw new Error('session หมดอายุ'); }
         if (!res.ok) throw new Error('status ' + res.status);
         return res.json();
       })
@@ -218,7 +212,6 @@
       body: JSON.stringify(state.data)
     })
       .then(function (res) {
-        if (res.status === 401) { location.href = '/login.html'; throw new Error('session หมดอายุ'); }
         if (res.status === 409) {
           return res.json().then(function (d) {
             var err = new Error('version ไม่ตรงกับเซิร์ฟเวอร์ (conflict)');
@@ -267,7 +260,6 @@
     if (apiAvailable !== false) return; // ต่อได้อยู่แล้ว ไม่ต้อง ping ซ้ำ
     fetch(API, { method: 'GET', cache: 'no-store' })
       .then(function (res) {
-        if (res.status === 401) { location.href = '/login.html'; return; }
         if (!res.ok) throw new Error('status ' + res.status);
         apiAvailable = true;
         lastSyncAt = Date.now();
@@ -689,28 +681,7 @@
     }).join('') + '</select>';
   }
 
-  function renderLedgerGate() {
-    return head('บัญชีรายวัน', 'ต้องยืนยันตัวตนก่อนเข้าใช้งานหน้านี้ทุกครั้ง') +
-      '<div style="display:flex;justify-content:center;padding:6px 0 30px">' +
-        '<div class="auth-card" style="max-width:380px">' +
-          '<div class="auth-logo"><img src="assets/img/logo-mark.png" alt="Bakery By Khunkai" ' +
-            'onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{textContent:\'🧁\',style:\'font-size:32px\'}))"></div>' +
-          '<h1>ยืนยันตัวตนอีกครั้ง</h1>' +
-          '<p class="auth-sub">กรอกรหัสผ่านเดียวกับตอนเข้าสู่ระบบเว็บไซต์ เพื่อเข้าหน้าบัญชีรายวัน<br>' +
-            '(เพื่อความปลอดภัย ระบบไม่บันทึกรหัสไว้ ต้องกรอกใหม่ทุกครั้ง)</p>' +
-          (state.ledgerVerifyError ? '<div class="auth-error show">' + esc(state.ledgerVerifyError) + '</div>' : '') +
-          '<form class="auth-form" id="ldgGateForm" autocomplete="off">' +
-            '<div><label class="field" for="ldgPass">รหัสผ่าน</label>' +
-              '<input type="password" id="ldgPass" autocomplete="off" required autofocus></div>' +
-            '<button type="submit" class="btn primary auth-submit" id="ldgGateBtn">ยืนยันและเข้าใช้งาน</button>' +
-          '</form>' +
-        '</div>' +
-      '</div>';
-  }
-
   V.ledger = function () {
-    if (!state.ledgerUnlocked) return renderLedgerGate();
-
     var all = ledgerComputed();
     var isAll = state.ledgerDate === 'all';
     var dateRows = isAll ? all.rows : all.rows.filter(function (r) { return r.date === state.ledgerDate; });
@@ -741,7 +712,7 @@
         '<button type="button" class="pill' + (state.ledgerDraftType === 'income' ? ' is-active' : '') + '" data-act="ldg-type" data-type="income">💰 รายรับ</button>' +
         '<button type="button" class="pill' + (state.ledgerDraftType === 'expense' ? ' is-active' : '') + '" data-act="ldg-type" data-type="expense">💸 รายจ่าย</button>' +
       '</div>' +
-      (state.ledgerFormError ? '<div class="auth-error show" style="margin-top:12px">' + esc(state.ledgerFormError) + '</div>' : '') +
+      (state.ledgerFormError ? '<div class="form-error" style="margin-top:12px">' + esc(state.ledgerFormError) + '</div>' : '') +
       '<div class="actions" style="margin-top:14px"><button class="btn primary" data-act="ldg-add">+ บันทึกรายการ</button></div>' +
     '</div>';
 
@@ -943,24 +914,9 @@
   document.getElementById('nav').addEventListener('click', function (e) {
     var b = e.target.closest('.tab');
     if (!b) return;
-    // ออกจากหน้าบัญชีรายวัน -> ล็อกทันที ต้องกรอกรหัสใหม่ทุกครั้งที่กลับเข้ามา
-    if (state.view === 'ledger' && b.dataset.view !== 'ledger') {
-      state.ledgerUnlocked = false;
-      state.ledgerVerifyError = '';
-    }
     state.view = b.dataset.view;
     render();
   });
-
-  var logoutBtn = document.getElementById('logoutBtn');
-  if (logoutBtn) {
-    logoutBtn.addEventListener('click', function () {
-      logoutBtn.disabled = true;
-      fetch('/api/logout', { method: 'POST' })
-        .catch(function () { /* เน็ตหลุดก็ยังพาไปหน้า login ต่อได้ */ })
-        .then(function () { location.href = '/login.html'; });
-    });
-  }
 
   /* ปุ่ม "โหลดข้อมูลล่าสุด" ในแถบแจ้งเตือน conflict — อยู่นอก #app จึงต้องผูก listener แยกต่างหาก */
   var saveAlertEl = document.getElementById('saveAlert');
@@ -1010,34 +966,6 @@
 
   app.addEventListener('change', function (e) {
     if (e.target.id === 'importFile' && e.target.files[0]) importFile(e.target.files[0]);
-  });
-
-  /* ยืนยันตัวตนก่อนเข้าหน้าบัญชีรายวัน — เรียก /api/verify-code ตรง ๆ ไม่มีการเก็บรหัสไว้ที่ไหนเลย */
-  app.addEventListener('submit', function (e) {
-    if (e.target.id !== 'ldgGateForm') return;
-    e.preventDefault();
-
-    var btn = document.getElementById('ldgGateBtn');
-    var password = document.getElementById('ldgPass').value;
-    btn.disabled = true;
-    btn.textContent = 'กำลังตรวจสอบ…';
-
-    fetch('/api/verify-code', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ password: password })
-    })
-      .then(function (res) { return res.json().then(function (d) { return { ok: res.ok, data: d }; }); })
-      .then(function (r) {
-        if (!r.ok) throw new Error(r.data && r.data.error ? r.data.error : 'ยืนยันตัวตนไม่สำเร็จ');
-        state.ledgerUnlocked = true;
-        state.ledgerVerifyError = '';
-        render();
-      })
-      .catch(function (err) {
-        state.ledgerVerifyError = err.message || 'ยืนยันตัวตนไม่สำเร็จ ลองใหม่อีกครั้ง';
-        render();
-      });
   });
 
   app.addEventListener('click', function (e) {
