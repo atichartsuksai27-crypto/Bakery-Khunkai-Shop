@@ -1,0 +1,16 @@
+# Bakery Khunkai — Next.js บน Cloudflare Pages (@cloudflare/next-on-pages)
+name = "bakery-khunkai-shop"
+compatibility_date = "2025-01-01"
+
+# จำเป็นสำหรับ Next.js บน Cloudflare: runtime ของ Workers ไม่มี Node built-in ให้โดยกำเนิด
+# flag นี้เปิด polyfill ชุด nodejs_compat (Buffer, node:crypto, node:stream ฯลฯ) ให้ใช้ได้เท่าที่ Cloudflare รองรับ
+# ถ้าไม่เปิด build จะผ่านแต่ไปพังตอน runtime ด้วย error "Cannot resolve node:..."
+compatibility_flags = ["nodejs_compat"]
+
+# ผลลัพธ์ของ `npx @cloudflare/next-on-pages` — ไม่ใช่ .next
+pages_build_output_dir = ".vercel/output/static"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bakery-khunkai-db"
+database_id = "d30092a6-7a97-4346-93c8-d918e10a6992"
