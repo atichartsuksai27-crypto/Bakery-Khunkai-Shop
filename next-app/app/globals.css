@@ -384,6 +384,45 @@ input[type=checkbox] {
 .big { font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
 .empty { text-align: center; color: var(--muted); padding: 48px 12px; font-size: 14px; }
 
+/* ---------- บัญชีรายวัน: กลุ่มรายวัน (มุมมอง "ทั้งเดือน") ---------- */
+.ldg-days { border: 1px solid var(--line-soft); border-radius: var(--radius-sm); overflow: hidden; }
+.ldg-day { border-bottom: 1px solid var(--line-soft); }
+.ldg-day:last-child { border-bottom: 0; }
+.ldg-day-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  transition: background .15s ease;
+}
+.ldg-day-head:hover { background: var(--surface-2); }
+.ldg-day-date { flex: 0 0 auto; font-weight: 600; min-width: 96px; font-size: 14px; }
+.ldg-day-sum {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.ldg-day-caret {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 13px;
+  transition: transform .18s ease;
+}
+.ldg-day-head.is-open .ldg-day-caret { transform: rotate(90deg); }
+.ldg-day-body { padding: 0 14px 14px; margin: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.ldg-day-body table { font-size: 13.5px; }
+
 /* ---------- toast ---------- */
 .toast {
   position: fixed;

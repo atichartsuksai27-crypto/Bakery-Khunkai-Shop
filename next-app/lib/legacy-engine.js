@@ -147,7 +147,9 @@ export function bootLegacyApp() {
     // รอบบัญชีที่กำลังดู — null + pinned=false แปลว่า "ตามเดือนปัจจุบันจริงเสมอ"
     // ไม่เก็บค่าเดือนไว้ตายตัวตอนบูต เพื่อให้หน้าที่เปิดค้างข้ามเดือนเปลี่ยนรอบตามเองอัตโนมัติ
     ledgerMonth: null,
-    ledgerMonthPinned: false // true = ผู้ใช้กดเลือกเดือนย้อนหลังเอง
+    ledgerMonthPinned: false, // true = ผู้ใช้กดเลือกเดือนย้อนหลังเอง
+    ledgerEditingId: null, // id ของรายการที่กำลังแก้ไขอยู่ (null = โหมดบันทึกรายการใหม่)
+    ledgerExpandedDays: {} // { 'YYYY-MM-DD': true } วันไหนกางดูรายละเอียดอยู่ในมุมมอง "ทั้งเดือน"
   };
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -829,6 +831,7 @@ export function bootLegacyApp() {
   /** เปลี่ยนรอบบัญชีที่กำลังดู — เลือกเดือนปัจจุบันจะเลิก pin เพื่อให้วิ่งตามเดือนจริงต่อไปเอง */
   function setLedgerMonth(mk) {
     if (!mk) return;
+    state.ledgerEditingId = null; // สลับเดือนแล้วยกเลิกฟอร์มแก้ไขค้างของเดือนก่อน กันสับสนว่ากำลังแก้อะไรอยู่
     if (mk === todayMonthStr()) {
       state.ledgerMonth = null;
       state.ledgerMonthPinned = false;
@@ -857,11 +860,62 @@ export function bootLegacyApp() {
     return mk + '-01';
   }
 
-  function ledgerCategorySelect() {
+  function ledgerCategorySelect(selected) {
     var list = state.ledgerDraftType === 'income' ? INCOME_CATS : EXPENSE_CATS;
     return '<select id="ldgCategory">' + list.map(function (c) {
-      return '<option value="' + c.id + '">' + esc(c.label) + '</option>';
+      return '<option value="' + c.id + '"' + (c.id === selected ? ' selected' : '') + '>' + esc(c.label) + '</option>';
     }).join('') + '</select>';
+  }
+
+  /** หารายการดิบ (ไม่ผ่านการคำนวณยอดคงเหลือ) จาก id — ใช้ตอนโหลดค่าเข้าฟอร์มแก้ไข */
+  function ledgerEntryById(id) {
+    var list = ledgerData().entries || [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
+  /** จัดกลุ่มรายการ (ที่คำนวณยอดคงเหลือแล้ว) ตามวัน เรียงตามลำดับที่พบ (แถวมาเรียงตามวันที่อยู่แล้ว)
+   *  ใช้กับมุมมอง "ทั้งเดือน" ให้เป็นรายวันแบบกางดูได้ทีละวัน แทนตารางยาวเดียวที่ตาลาย */
+  function ledgerGroupByDay(rows) {
+    var order = [], byDate = {};
+    rows.forEach(function (r) {
+      if (!byDate[r.date]) { byDate[r.date] = []; order.push(r.date); }
+      byDate[r.date].push(r);
+    });
+    return order.map(function (d) {
+      var list = byDate[d];
+      var income = 0, expense = 0;
+      list.forEach(function (r) { if (r.type === 'income') income += r.amount; else expense += r.amount; });
+      return { date: d, rows: list, income: income, expense: expense, balance: list[list.length - 1].balance };
+    });
+  }
+
+  /** ปุ่ม "แก้ไข" + "✕" ลบ ต่อแถว — ใช้ร่วมกันทั้งตารางแบบวันเดียวและตารางในแต่ละกลุ่มวัน */
+  function ledgerRowActions(id) {
+    return '<div class="actions" style="flex-wrap:nowrap;gap:6px">' +
+      '<button class="btn ghost sm" data-act="ldg-edit" data-id="' + id + '">แก้ไข</button>' +
+      '<button class="btn ghost sm" data-act="ldg-del" data-id="' + id + '">✕</button>' +
+    '</div>';
+  }
+
+  /** ตารางรายการ — showDateCol=false ตอนอยู่ในกลุ่มรายวันแล้ว (หัวข้อวันที่ขึ้นให้แล้วด้านบน ไม่ต้องซ้ำ) */
+  function ledgerRowsTable(rows, showDateCol) {
+    return '<table><thead><tr>' +
+        (showDateCol ? '<th>วันที่</th>' : '') +
+        '<th>รายการ</th><th>หมวด</th><th class="num">รายรับ</th><th class="num">รายจ่าย</th><th class="num">คงเหลือ</th><th></th>' +
+      '</tr></thead><tbody>' +
+      rows.map(function (r) {
+        return '<tr>' +
+          (showDateCol ? '<td>' + thDate(r.date) + '</td>' : '') +
+          '<td>' + esc(r.desc) + '</td>' +
+          '<td class="muted">' + esc(ledgerCatLabel(r.category)) + '</td>' +
+          '<td class="num good">' + (r.type === 'income' ? money(r.amount) : '<span class="muted">-</span>') + '</td>' +
+          '<td class="num bad">' + (r.type === 'expense' ? money(r.amount) : '<span class="muted">-</span>') + '</td>' +
+          '<td class="num"><strong>' + money(r.balance) + '</strong></td>' +
+          '<td>' + ledgerRowActions(r.id) + '</td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table>';
   }
 
   V.ledger = function () {
@@ -945,22 +999,34 @@ export function bootLegacyApp() {
       '</div>' +
     '</div>';
 
-    /* ---------- ฟอร์มบันทึกรายการ (คงเดิม) ---------- */
-    html += '<div class="card"><h2>บันทึกรายการใหม่</h2><div class="grid cols-4">' +
-        f('วันที่', '<input type="date" id="ldgDate" value="' + esc(defaultEntryDate(mk)) + '">') +
-        f('รายการ', '<input type="text" id="ldgDesc" placeholder="เช่น ขายเค้กกล้วยหอม 10 กล่อง">') +
-        f('จำนวนเงิน (บาท)', '<input type="number" id="ldgAmount" min="0" step="0.01" placeholder="0.00">') +
-        f('หมวด', ledgerCategorySelect()) +
+    /* ---------- ฟอร์มบันทึกรายการ / แก้ไขรายการ (ฟอร์มเดียวกัน สลับโหมดด้วย ledgerEditingId) ---------- */
+    var editEntry = state.ledgerEditingId ? ledgerEntryById(state.ledgerEditingId) : null;
+    if (state.ledgerEditingId && !editEntry) state.ledgerEditingId = null; // รายการถูกลบไปแล้วระหว่างแก้ไข
+
+    html += '<div class="card" id="ldgFormCard"' + (editEntry ? ' style="border:1px solid var(--brand)"' : '') + '>' +
+      '<h2>' + (editEntry ? 'แก้ไขรายการ' : 'บันทึกรายการใหม่') + '</h2><div class="grid cols-4">' +
+        f('วันที่', '<input type="date" id="ldgDate" value="' + esc(editEntry ? editEntry.date : defaultEntryDate(mk)) + '">') +
+        f('รายการ', '<input type="text" id="ldgDesc" placeholder="เช่น ขายเค้กกล้วยหอม 10 กล่อง" value="' + esc(editEntry ? editEntry.desc : '') + '">') +
+        f('จำนวนเงิน (บาท)', '<input type="number" id="ldgAmount" min="0" step="0.01" placeholder="0.00" value="' + (editEntry ? editEntry.amount : '') + '">') +
+        f('หมวด', ledgerCategorySelect(editEntry ? editEntry.category : '')) +
       '</div>' +
       '<div class="pill-list" style="margin-top:12px">' +
         '<button type="button" class="pill' + (state.ledgerDraftType === 'income' ? ' is-active' : '') + '" data-act="ldg-type" data-type="income">💰 รายรับ</button>' +
         '<button type="button" class="pill' + (state.ledgerDraftType === 'expense' ? ' is-active' : '') + '" data-act="ldg-type" data-type="expense">💸 รายจ่าย</button>' +
       '</div>' +
       (state.ledgerFormError ? '<div class="form-error" style="margin-top:12px">' + esc(state.ledgerFormError) + '</div>' : '') +
-      '<div class="actions" style="margin-top:14px"><button class="btn primary" data-act="ldg-add">+ บันทึกรายการ</button></div>' +
+      '<div class="actions" style="margin-top:14px">' +
+        '<button class="btn primary" data-act="ldg-add">' + (editEntry ? 'บันทึกการแก้ไข' : '+ บันทึกรายการ') + '</button>' +
+        (editEntry ? '<button class="btn ghost" data-act="ldg-edit-cancel">ยกเลิกการแก้ไข</button>' : '') +
+      '</div>' +
     '</div>';
 
     /* ---------- รายการในรอบเดือนนี้ ---------- */
+    // มุมมอง "ทั้งเดือน" จัดกลุ่มเป็นรายวัน กางดูรายละเอียดทีละวันได้ (data-act="ldg-day-toggle")
+    // แทนตารางยาวรวมทุกรายการทั้งเดือนแถวเดียวกันหมด — เก็บสถานะวันที่กางไว้ใน ledgerExpandedDays
+    // เพื่อให้ยังกางค้างอยู่ต่อได้แม้มีการ render ใหม่ (เช่น แก้ไข/ลบรายการในวันที่กางอยู่)
+    var dayGroups = isAll ? ledgerGroupByDay(dateRows) : [];
+
     html += '<div class="card"><h2>รายการ <span class="hint">' + esc(thMonth(mk)) + '</span></h2>' +
       '<div class="grid cols-2" style="align-items:end;margin-bottom:14px">' +
         f('ดูรายการวันที่', '<input type="date" data-bind="lfd" data-fkey="lfd" value="' + esc(isAll ? '' : state.ledgerDate) + '"' +
@@ -976,29 +1042,35 @@ export function bootLegacyApp() {
           stat('คงเหลือ ณ สิ้นวันนี้', money(balanceAsOf) + ' <span class="sub">บาท</span>',
             'นับจากยอดยกมาของเดือนนี้', balanceAsOf >= 0 ? 'good' : 'bad') +
         '</div>' : '') +
-      (dateRows.length
-        ? '<div class="table-wrap"><table><thead><tr>' +
-            '<th>วันที่</th><th>รายการ</th><th>หมวด</th><th class="num">รายรับ</th><th class="num">รายจ่าย</th><th class="num">คงเหลือ</th><th></th>' +
-          '</tr></thead><tbody>' +
-          dateRows.map(function (r) {
-            return '<tr>' +
-              '<td>' + thDate(r.date) + '</td>' +
-              '<td>' + esc(r.desc) + '</td>' +
-              '<td class="muted">' + esc(ledgerCatLabel(r.category)) + '</td>' +
-              '<td class="num good">' + (r.type === 'income' ? money(r.amount) : '<span class="muted">-</span>') + '</td>' +
-              '<td class="num bad">' + (r.type === 'expense' ? money(r.amount) : '<span class="muted">-</span>') + '</td>' +
-              '<td class="num"><strong>' + money(r.balance) + '</strong></td>' +
-              '<td><button class="btn ghost sm" data-act="ldg-del" data-id="' + r.id + '">✕</button></td>' +
-            '</tr>';
-          }).join('') +
-          '</tbody></table>' +
-          '<table><tfoot><tr>' +
+      (dateRows.length === 0
+        ? '<p class="empty">ยังไม่มีรายการ' + (isAll ? 'ในเดือนนี้' : 'ในวันที่เลือก') + '</p>'
+        : (isAll
+            ? '<div class="ldg-days">' +
+                dayGroups.map(function (g) {
+                  var open = !!state.ledgerExpandedDays[g.date];
+                  return '<div class="ldg-day">' +
+                    '<button type="button" class="ldg-day-head' + (open ? ' is-open' : '') +
+                      '" data-act="ldg-day-toggle" data-date="' + g.date + '">' +
+                      '<span class="ldg-day-date">' + thDate(g.date) + '</span>' +
+                      '<span class="ldg-day-sum">' +
+                        (g.income ? '<span class="good">+' + money(g.income) + '</span>' : '') +
+                        (g.expense ? '<span class="bad">−' + money(g.expense) + '</span>' : '') +
+                        '<span class="muted">' + g.rows.length + (g.rows.length > 1 ? ' รายการ' : ' รายการ') +
+                          ' · คงเหลือ ' + money(g.balance) + '</span>' +
+                      '</span>' +
+                      '<span class="ldg-day-caret">›</span>' +
+                    '</button>' +
+                    (open ? '<div class="ldg-day-body">' + ledgerRowsTable(g.rows, false) + '</div>' : '') +
+                  '</div>';
+                }).join('') +
+              '</div>'
+            : '<div class="table-wrap">' + ledgerRowsTable(dateRows, true) + '</div>') +
+          '<div class="table-wrap" style="margin-top:2px"><table><tfoot><tr>' +
             '<td>รวม' + (isAll ? 'ทั้งเดือน' : 'วันนี้') + '</td>' +
             '<td class="num good">' + money(isAll ? m.totalIncome : dayIncome) + '</td>' +
             '<td class="num bad">' + money(isAll ? m.totalExpense : dayExpense) + '</td>' +
             '<td class="num">' + money(isAll ? m.closing : balanceAsOf) + '</td>' +
-          '</tr></tfoot></table></div>'
-        : '<p class="empty">ยังไม่มีรายการ' + (isAll ? 'ในเดือนนี้' : 'ในวันที่เลือก') + '</p>') +
+          '</tr></tfoot></table></div>') +
       '<div class="actions" style="margin-top:14px">' +
         '<button class="btn" data-act="ldg-export">ดาวน์โหลดบัญชีเดือนนี้ (CSV)</button>' +
         '<button class="btn" data-act="print">พิมพ์</button>' +
@@ -1352,24 +1424,57 @@ export function bootLegacyApp() {
       if (!isFinite(amount) || amount <= 0) { state.ledgerFormError = 'กรุณากรอกจำนวนเงินให้ถูกต้อง (มากกว่า 0)'; render(); return; }
       if (!category) { state.ledgerFormError = 'กรุณาเลือกหมวด'; render(); return; }
 
-      state.data.ledger.entries.push({
-        id: uid('ldg'), date: ldgDate, desc: desc,
-        type: state.ledgerDraftType, category: category, amount: amount
-      });
+      var editingEntry = state.ledgerEditingId ? ledgerEntryById(state.ledgerEditingId) : null;
+      if (editingEntry) {
+        // แก้ไขรายการเดิม — แก้ field ตรง ๆ ไม่สร้างรายการใหม่ ไม่กระทบ id (ที่ผูกกับลำดับการเรียงเดิม)
+        editingEntry.date = ldgDate;
+        editingEntry.desc = desc;
+        editingEntry.type = state.ledgerDraftType;
+        editingEntry.category = category;
+        editingEntry.amount = amount;
+        state.ledgerEditingId = null;
+      } else {
+        state.data.ledger.entries.push({
+          id: uid('ldg'), date: ldgDate, desc: desc,
+          type: state.ledgerDraftType, category: category, amount: amount
+        });
+      }
       state.ledgerFormError = '';
       state.ledgerDate = ldgDate;
       // ถ้าบันทึกลงเดือนอื่น (เช่นเลือกวันที่ย้อนหลัง) ให้สลับไปดูรอบบัญชีของเดือนนั้นทันที
-      // ไม่งั้นผู้ใช้จะกดบันทึกแล้วไม่เห็นรายการที่เพิ่งเพิ่ม เพราะมันไปอยู่คนละรอบเดือน
+      // ไม่งั้นผู้ใช้จะกดบันทึกแล้วไม่เห็นรายการที่เพิ่งเพิ่ม/แก้ เพราะมันไปอยู่คนละรอบเดือน
       var addedMk = monthKeyOf(ldgDate);
       if (addedMk !== currentLedgerMonth()) {
         state.ledgerMonth = addedMk;
         state.ledgerMonthPinned = addedMk !== todayMonthStr();
       }
-      save('บันทึกรายการแล้ว'); render();
+      save(editingEntry ? 'แก้ไขรายการแล้ว' : 'บันทึกรายการแล้ว'); render();
+
+    } else if (act === 'ldg-edit') {
+      var editTarget = ledgerEntryById(b.dataset.id);
+      if (!editTarget) return;
+      state.ledgerEditingId = editTarget.id;
+      state.ledgerDraftType = editTarget.type;
+      state.ledgerFormError = '';
+      render();
+      var formCard = document.getElementById('ldgFormCard');
+      if (formCard && formCard.scrollIntoView) formCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    } else if (act === 'ldg-edit-cancel') {
+      state.ledgerEditingId = null;
+      state.ledgerFormError = '';
+      render();
+
+    } else if (act === 'ldg-day-toggle') {
+      var dkey = b.dataset.date;
+      if (state.ledgerExpandedDays[dkey]) delete state.ledgerExpandedDays[dkey];
+      else state.ledgerExpandedDays[dkey] = true;
+      render();
 
     } else if (act === 'ldg-del') {
       if (!confirm('ลบรายการนี้?')) return;
       state.data.ledger.entries = state.data.ledger.entries.filter(function (x) { return x.id !== b.dataset.id; });
+      if (state.ledgerEditingId === b.dataset.id) state.ledgerEditingId = null; // กันฟอร์มค้างแก้ไขรายการที่ถูกลบไปแล้ว
       save(); render();
 
     } else if (act === 'ldg-showall') {
