@@ -762,6 +762,27 @@ export function bootLegacyApp() {
     };
   }
 
+  /** ให้เกรด "ภาพรวมสุขภาพร้าน" จากยอดของเดือนที่กำลังดู — ไม่แตะ/ไม่พึ่งพา field ใหม่ใน state หรือ D1 เลย
+   *  เป็นแค่ตัวคำนวณ display-only ต่อยอดจาก totalIncome/net ที่ ledgerComputed คำนวณไว้แล้ว
+   *  ประเมินตามลำดับเงื่อนไขจากแย่สุด -> ดีสุด (แต่ละเงื่อนไขข้อถัดไปเป็นจริงได้ก็ต่อเมื่อข้อก่อนหน้าเป็นเท็จ) */
+  function ledgerHealthGrade(revenue, netProfit) {
+    var margin = revenue ? (netProfit / revenue) * 100 : 0;
+    var pctText = margin.toFixed(2) + '%';
+    if (netProfit < 0) {
+      return { label: 'แย่มาก', cls: 'grade-1', sub: 'ขาดทุน (Margin ' + pctText + ')' };
+    }
+    if (margin < 7 || netProfit < 30000) {
+      return { label: 'แย่', cls: 'grade-2', sub: 'กำไรบางเฉียบ (Margin ' + pctText + ')' };
+    }
+    if (margin < 13 || netProfit < 50000) {
+      return { label: 'กลาง', cls: 'grade-3', sub: 'พอประคองตัวได้ (Margin ' + pctText + ')' };
+    }
+    if (margin < 20 || netProfit < 80000) {
+      return { label: 'สูง', cls: 'grade-4', sub: 'สุขภาพการเงินดี (Margin ' + pctText + ')' };
+    }
+    return { label: 'สูงมาก', cls: 'grade-5', sub: 'ยอดเยี่ยมตามเป้า (Margin ' + pctText + ')' };
+  }
+
   /** รอบบัญชีที่กำลังดูอยู่
    *  ถ้าผู้ใช้ไม่ได้เลือกเดือนเองไว้ (ledgerMonthPinned = false) ให้วิ่งตามเดือนปัจจุบันจริงเสมอ
    *  จึงข้ามไปรอบใหม่ให้เองอัตโนมัติเมื่อขึ้นเดือนใหม่ แม้จะเปิดหน้าเว็บค้างไว้ข้ามเดือนก็ตาม */
@@ -965,11 +986,13 @@ export function bootLegacyApp() {
     html += ledgerCalendarHtml(mk, months, thisMonthKey, isThisMonth, isAll, state.ledgerDate);
 
     /* ---------- สรุปรอบเดือนนี้ ---------- */
-    html += '<div class="grid cols-3">' +
+    var health = ledgerHealthGrade(m.totalIncome, m.net);
+    html += '<div class="grid cols-4">' +
       stat('รายรับเดือนนี้', money(m.totalIncome) + ' <span class="sub">บาท</span>', thMonth(mk), 'stat-brand') +
       stat('รายจ่ายเดือนนี้', money(m.totalExpense) + ' <span class="sub">บาท</span>', thMonth(mk)) +
       stat('กำไร/ขาดทุนเดือนนี้', money(m.net) + ' <span class="sub">บาท</span>',
         'รายรับ − รายจ่าย ของเดือนนี้', m.net >= 0 ? 'good' : 'bad') +
+      stat('ภาพรวมสุขภาพร้าน', health.label, health.sub, health.cls) +
     '</div>';
 
     /* ---------- ฟอร์มบันทึกรายการ / แก้ไขรายการ (ฟอร์มเดียวกัน สลับโหมดด้วย ledgerEditingId) ---------- */

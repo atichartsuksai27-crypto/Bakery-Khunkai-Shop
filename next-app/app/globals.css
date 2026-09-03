@@ -231,6 +231,14 @@ main {
    จะกลายเป็น flex row ไปด้วย ทำให้ label/value/sub เรียงข้างกันแทนที่จะซ้อนกันตามปกติ */
 .stat.stat-brand .value { color: var(--brand); }
 
+/* การ์ด "ภาพรวมสุขภาพร้าน" — 5 เกรดสีตายตัวตามที่กำหนด ไม่ผูกกับ --good/--bad ปกติ
+   เพราะต้องการไล่เฉด 5 ระดับที่ชัดเจนกว่า good/bad 2 ระดับเดิม */
+.stat.grade-1 .value { color: #d32f2f; }
+.stat.grade-2 .value { color: #f57c00; }
+.stat.grade-3 .value { color: #fbc02d; }
+.stat.grade-4 .value { color: #689f38; }
+.stat.grade-5 .value { color: #2e7d32; }
+
 /* ---------- table ---------- */
 .table-wrap {
   overflow-x: auto;
@@ -445,9 +453,10 @@ input[type=checkbox] {
 .ldg-cal-dow {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 4px;
-  margin-top: 14px;
-  font-size: 12px;
+  gap: 3px;
+  max-width: 380px;
+  margin: 12px auto 0;
+  font-size: 11px;
   font-weight: 600;
   color: var(--muted);
   text-align: center;
@@ -456,32 +465,33 @@ input[type=checkbox] {
 .ldg-cal-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 4px;
-  margin-top: 6px;
+  gap: 3px;
+  max-width: 380px;
+  margin: 6px auto 0;
 }
 .cal-cell {
   aspect-ratio: 1 / 1;
-  min-height: 52px;
+  min-height: 38px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 1px;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: 9px;
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
   cursor: pointer;
-  padding: 4px 2px;
+  padding: 3px 2px;
   transition: background .15s ease, border-color .15s ease;
 }
 .cal-cell:hover { background: var(--surface-3); }
 .cal-cell.cal-empty { background: none; cursor: default; pointer-events: none; }
-.cal-daynum { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cal-daynum { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .cal-cell.is-sun .cal-daynum { color: var(--bad); }
 .cal-amt {
-  font-size: 10.5px;
+  font-size: 9px;
   color: var(--good);
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
@@ -493,11 +503,6 @@ input[type=checkbox] {
 }
 .cal-cell.is-selected .cal-daynum,
 .cal-cell.is-selected .cal-amt { color: #fff; }
-@media (max-width: 640px) {
-  .cal-cell { min-height: 44px; }
-  .cal-daynum { font-size: 13px; }
-  .cal-amt { font-size: 9px; }
-}
 
 /* ---------- toast ---------- */
 .toast {
