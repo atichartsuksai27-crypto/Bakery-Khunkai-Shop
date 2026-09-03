@@ -37,7 +37,13 @@ export interface LedgerEntry {
 }
 
 export interface Ledger {
+  /** ยอดยกมาของ "เดือนแรกสุดที่มีข้อมูล" — ค่าตั้งต้นก่อนเริ่มใช้ระบบ (ของเดิม เก็บไว้เหมือนเดิม) */
   openingBalance: number;
+  /**
+   * ยอดยกมาที่ผู้ใช้ "ปิดรอบ" กำหนดไว้เองรายเดือน — key เป็น 'YYYY-MM'
+   * มีค่าเมื่อไร ให้ถือว่าเป็นยอดตั้งต้นของเดือนนั้นทันที ไม่ต้องคำนวณย้อนจากเดือนก่อนอีก
+   */
+  monthlyOpenings?: Record<string, number>;
   entries: LedgerEntry[];
 }
 

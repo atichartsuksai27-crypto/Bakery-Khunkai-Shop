@@ -24,11 +24,25 @@ export const dynamic = 'force-dynamic';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024; // กันไฟล์ผิดปกติขนาดใหญ่เกินไป
 
+/** เก็บเฉพาะยอดยกมารายเดือนที่เป็นตัวเลขจริงและ key อยู่ในรูปแบบ 'YYYY-MM' เท่านั้น */
+function normalizeMonthlyOpenings(input: unknown): Record<string, number> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (/^\d{4}-\d{2}$/.test(key) && typeof value === 'number' && Number.isFinite(value)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function normalizeLedger(ledger: unknown): Ledger {
   const l = ledger as Ledger | undefined;
   if (!l || typeof l !== 'object' || !Array.isArray(l.entries)) return DEFAULT_LEDGER as Ledger;
   return {
     openingBalance: typeof l.openingBalance === 'number' ? l.openingBalance : 0,
+    // ถ้าไม่ผ่านบรรทัดนี้ ยอดยกมารายเดือนที่ผู้ใช้ตั้งไว้จะถูกตัดทิ้งเงียบ ๆ ตอนบันทึกทุกครั้ง
+    monthlyOpenings: normalizeMonthlyOpenings(l.monthlyOpenings),
     entries: l.entries
   };
 }

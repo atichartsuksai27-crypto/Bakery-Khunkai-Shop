@@ -9,4 +9,4 @@ import type { AppState } from './types';
 
 export const SEED = seedJson as unknown as AppState & { version: number };
 
-export const DEFAULT_LEDGER = { openingBalance: 0, entries: [] };
+export const DEFAULT_LEDGER = { openingBalance: 0, monthlyOpenings: {}, entries: [] };

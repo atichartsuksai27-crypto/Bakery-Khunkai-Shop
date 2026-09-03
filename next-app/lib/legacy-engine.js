@@ -93,6 +93,46 @@ export function bootLegacyApp() {
     return d.toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' });
   }
 
+  /* ---------- รอบบัญชีรายเดือน: 1 เดือน = 1 รอบ ----------
+   *  ใช้ key รูปแบบ 'YYYY-MM' เป็นตัวแทน "รอบบัญชี" ทุกที่ในระบบ
+   *  อิงเวลาไทยเหมือน todayStr() เพื่อไม่ให้เครื่องที่ตั้ง timezone เป็น UTC ข้ามเดือนผิดจังหวะ */
+
+  /** เดือนปัจจุบันตามเวลาไทย เช่น '2026-09' */
+  function todayMonthStr() { return todayStr().slice(0, 7); }
+
+  /** ดึงรอบบัญชีจากวันที่ '2026-09-03' -> '2026-09' */
+  function monthKeyOf(dateStr) { return String(dateStr || '').slice(0, 7); }
+
+  /** เดือนก่อนหน้า 1 เดือน (rolling previous month) '2026-01' -> '2025-12' */
+  function prevMonthKey(mk) {
+    var y = parseInt(mk.slice(0, 4), 10);
+    var m = parseInt(mk.slice(5, 7), 10);
+    if (!isFinite(y) || !isFinite(m)) return mk;
+    m -= 1;
+    if (m < 1) { m = 12; y -= 1; }
+    return y + '-' + (m < 10 ? '0' + m : String(m));
+  }
+
+  /** เดือนถัดไป 1 เดือน '2026-12' -> '2027-01' */
+  function nextMonthKey(mk) {
+    var y = parseInt(mk.slice(0, 4), 10);
+    var m = parseInt(mk.slice(5, 7), 10);
+    if (!isFinite(y) || !isFinite(m)) return mk;
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+    return y + '-' + (m < 10 ? '0' + m : String(m));
+  }
+
+  /** ชื่อเดือนภาษาไทยเต็ม เช่น '2026-09' -> 'กันยายน 2026' (ใช้ ค.ศ. ให้ตรงกับที่ผู้ใช้ระบุ) */
+  function thMonth(mk) {
+    var y = parseInt(mk.slice(0, 4), 10);
+    var m = parseInt(mk.slice(5, 7), 10);
+    if (!isFinite(y) || !isFinite(m)) return mk;
+    var names = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+                 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+    return (names[m - 1] || mk) + ' ' + y;
+  }
+
   /* ============================================================ store */
 
   var state = {
@@ -103,7 +143,11 @@ export function bootLegacyApp() {
     data: null,
     ledgerFormError: '',
     ledgerDraftType: 'income',
-    ledgerDate: null // ตั้งค่าเป็นวันนี้ตอนเริ่มระบบ
+    ledgerDate: null, // ตั้งค่าเป็นวันนี้ตอนเริ่มระบบ
+    // รอบบัญชีที่กำลังดู — null + pinned=false แปลว่า "ตามเดือนปัจจุบันจริงเสมอ"
+    // ไม่เก็บค่าเดือนไว้ตายตัวตอนบูต เพื่อให้หน้าที่เปิดค้างข้ามเดือนเปลี่ยนรอบตามเองอัตโนมัติ
+    ledgerMonth: null,
+    ledgerMonthPinned: false // true = ผู้ใช้กดเลือกเดือนย้อนหลังเอง
   };
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -668,29 +712,149 @@ export function bootLegacyApp() {
 
   /* ---------------------------------------------------- บัญชีรายวัน */
 
-  /** คำนวณยอดคงเหลือสะสมทีละแถวตามหลักสมุดเงินสด (Cash Book):
-   *  ยอดคงเหลือ[i] = ยอดคงเหลือ[i-1] + รายรับ - รายจ่าย, เริ่มจากยอดยกมา */
-  function ledgerComputed() {
-    var L = state.data.ledger || { openingBalance: 0, entries: [] };
-    var sorted = (L.entries || []).slice().sort(function (a, b) {
-      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
-      return a.id < b.id ? -1 : 1; // id ขึ้นต้นด้วย timestamp base36 เรียงตามเวลาบันทึกได้
+  function ledgerData() {
+    var L = state.data.ledger || { openingBalance: 0, monthlyOpenings: {}, entries: [] };
+    if (!L.monthlyOpenings || typeof L.monthlyOpenings !== 'object') L.monthlyOpenings = {};
+    return L;
+  }
+
+  /** รายการทั้งหมดของ "รอบเดือนนั้นเดือนเดียว" เรียงตามวันแล้วตามเวลาที่บันทึก */
+  function ledgerEntriesOfMonth(mk) {
+    return (ledgerData().entries || [])
+      .filter(function (e) { return monthKeyOf(e.date) === mk; })
+      .sort(function (a, b) {
+        if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+        return a.id < b.id ? -1 : 1; // id ขึ้นต้นด้วย timestamp base36 เรียงตามเวลาบันทึกได้
+      });
+  }
+
+  /** เดือนแรกสุดที่มีข้อมูล — ใช้ผูกกับ openingBalance เดิม (ยอดตั้งต้นก่อนเริ่มใช้ระบบ) */
+  function ledgerFirstMonth() {
+    var first = null;
+    (ledgerData().entries || []).forEach(function (e) {
+      var mk = monthKeyOf(e.date);
+      if (mk && (first === null || mk < first)) first = mk;
     });
-    var bal = L.openingBalance || 0;
-    var totalIncome = 0, totalExpense = 0;
-    var rows = sorted.map(function (e) {
-      if (e.type === 'income') { bal += e.amount; totalIncome += e.amount; }
-      else { bal -= e.amount; totalExpense += e.amount; }
+    return first;
+  }
+
+  /** รอบบัญชีทุกเดือนที่มีข้อมูล + เดือนที่ตั้งยอดยกมาไว้ + เดือนปัจจุบัน (เรียงเก่า -> ใหม่)
+   *  ใช้ทำเมนูย้อนดูเดือนเก่า — ข้อมูลเดือนเก่าไม่ถูกลบ ยังเปิดดูได้เสมอ */
+  function ledgerMonths() {
+    var seen = {};
+    (ledgerData().entries || []).forEach(function (e) {
+      var mk = monthKeyOf(e.date);
+      if (mk) seen[mk] = true;
+    });
+    Object.keys(ledgerData().monthlyOpenings || {}).forEach(function (mk) { seen[mk] = true; });
+    seen[todayMonthStr()] = true;
+    return Object.keys(seen).sort();
+  }
+
+  /** ยอดยกมา (ต้นรอบ) ของเดือน mk
+   *
+   *  ลำดับการหาค่า:
+   *    1. ถ้าผู้ใช้ "ปิดรอบ" ตั้งยอดยกมาของเดือนนี้ไว้เอง -> ใช้ค่านั้นเลย จบ ไม่ดูเดือนก่อนอีก
+   *    2. ถ้าเดือนนี้เป็นเดือนแรกสุดที่มีข้อมูล -> ใช้ openingBalance เดิม (ยอดก่อนเริ่มใช้ระบบ)
+   *    3. นอกนั้น -> ยอดปิดของ "เดือนก่อนหน้า 1 เดือน" เท่านั้น (rolling previous month)
+   *
+   *  ข้อ 3 อ่านยอดปิดของเดือนก่อนหน้าเป็น "ตัวเลขก้อนเดียว" ไม่ได้เอารายการของหลายเดือน
+   *  ย้อนหลังมาบวกรวมกันใหม่ และถ้าเดือนก่อนหน้าถูกปิดรอบไว้แล้ว (ข้อ 1) การไล่ก็หยุดทันที */
+  function ledgerOpeningOf(mk, _guard) {
+    var L = ledgerData();
+    var explicit = L.monthlyOpenings[mk];
+    if (typeof explicit === 'number' && isFinite(explicit)) return explicit;
+
+    var first = ledgerFirstMonth();
+    if (first === null || mk <= first) return L.openingBalance || 0;
+
+    // กันลูปไม่รู้จบกรณีข้อมูลผิดปกติ (เช่น วันที่เพี้ยนจนไล่ย้อนไม่ถึงเดือนแรก)
+    var guard = _guard || 0;
+    if (guard > 600) return 0;
+
+    var prev = prevMonthKey(mk);
+    return ledgerClosingOf(prev, guard + 1);
+  }
+
+  /** ยอดปิด (สิ้นรอบ) ของเดือน mk = ยอดยกมาของเดือนนั้น + รายรับ - รายจ่าย ของเดือนนั้นเดือนเดียว */
+  function ledgerClosingOf(mk, _guard) {
+    var s = ledgerMonthTotals(mk);
+    return ledgerOpeningOf(mk, _guard) + s.net;
+  }
+
+  /** รวมรายรับ/รายจ่ายของเดือนนั้นเดือนเดียว (ไม่ยุ่งกับเดือนอื่นเลย) */
+  function ledgerMonthTotals(mk) {
+    var income = 0, expense = 0;
+    ledgerEntriesOfMonth(mk).forEach(function (e) {
+      if (e.type === 'income') income += e.amount; else expense += e.amount;
+    });
+    return { income: income, expense: expense, net: income - expense };
+  }
+
+  /** สรุปรอบบัญชีของเดือน mk พร้อมยอดคงเหลือสะสมรายแถว (Cash Book ภายในเดือน)
+   *  ยอดคงเหลือ[i] = ยอดคงเหลือ[i-1] + รายรับ - รายจ่าย โดยเริ่มนับใหม่จากยอดยกมาของเดือนนี้ */
+  function ledgerComputed(mk) {
+    var opening = ledgerOpeningOf(mk);
+    var bal = opening;
+    var income = 0, expense = 0;
+    var rows = ledgerEntriesOfMonth(mk).map(function (e) {
+      if (e.type === 'income') { bal += e.amount; income += e.amount; }
+      else { bal -= e.amount; expense += e.amount; }
       return { id: e.id, date: e.date, desc: e.desc, type: e.type, category: e.category, amount: e.amount, balance: bal };
     });
     return {
-      opening: L.openingBalance || 0,
+      month: mk,
+      opening: opening,
+      openingIsExplicit: typeof ledgerData().monthlyOpenings[mk] === 'number',
       rows: rows,
-      latestBalance: rows.length ? rows[rows.length - 1].balance : (L.openingBalance || 0),
-      totalIncome: totalIncome,
-      totalExpense: totalExpense,
-      net: totalIncome - totalExpense
+      closing: bal,
+      totalIncome: income,
+      totalExpense: expense,
+      net: income - expense
     };
+  }
+
+  /** รอบบัญชีที่กำลังดูอยู่
+   *  ถ้าผู้ใช้ไม่ได้เลือกเดือนเองไว้ (ledgerMonthPinned = false) ให้วิ่งตามเดือนปัจจุบันจริงเสมอ
+   *  จึงข้ามไปรอบใหม่ให้เองอัตโนมัติเมื่อขึ้นเดือนใหม่ แม้จะเปิดหน้าเว็บค้างไว้ข้ามเดือนก็ตาม */
+  function currentLedgerMonth() {
+    if (!state.ledgerMonthPinned || !state.ledgerMonth) return todayMonthStr();
+    return state.ledgerMonth;
+  }
+
+  /** ปัดเป็นสตางค์ก่อนเก็บลงฐานข้อมูล — กันค่าอย่าง 34964.82000000001 ที่เกิดจากการบวกทศนิยมสะสม
+   *  ไม่งั้นยอดยกมาที่ล็อกไว้จะพกเศษนี้ต่อไปเรื่อย ๆ ทุกเดือน */
+  function money2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+
+  /** เปลี่ยนรอบบัญชีที่กำลังดู — เลือกเดือนปัจจุบันจะเลิก pin เพื่อให้วิ่งตามเดือนจริงต่อไปเอง */
+  function setLedgerMonth(mk) {
+    if (!mk) return;
+    if (mk === todayMonthStr()) {
+      state.ledgerMonth = null;
+      state.ledgerMonthPinned = false;
+      state.ledgerDate = todayStr();
+    } else {
+      state.ledgerMonth = mk;
+      state.ledgerMonthPinned = true;
+      state.ledgerDate = 'all'; // เดือนย้อนหลังเปิดมาให้เห็นทั้งเดือนก่อน
+    }
+    render();
+  }
+
+  /** วันสุดท้ายของเดือน เช่น '2026-09' -> '2026-09-30' */
+  function monthLastDay(mk) {
+    var y = parseInt(mk.slice(0, 4), 10);
+    var m = parseInt(mk.slice(5, 7), 10);
+    var d = new Date(Date.UTC(y, m, 0)).getUTCDate(); // วันที่ 0 ของเดือนถัดไป = วันสุดท้ายของเดือนนี้
+    return mk + '-' + (d < 10 ? '0' + d : String(d));
+  }
+
+  /** วันที่ตั้งต้นในฟอร์มบันทึกรายการ — เดือนปัจจุบันใช้ "วันนี้", เดือนย้อนหลังใช้วันแรกของเดือนนั้น
+   *  กันไม่ให้เผลอบันทึกรายการลงผิดเดือนตอนกำลังดูข้อมูลย้อนหลัง */
+  function defaultEntryDate(mk) {
+    if (mk === todayMonthStr()) return todayStr();
+    if (state.ledgerDate && state.ledgerDate !== 'all' && monthKeyOf(state.ledgerDate) === mk) return state.ledgerDate;
+    return mk + '-01';
   }
 
   function ledgerCategorySelect() {
@@ -701,28 +865,89 @@ export function bootLegacyApp() {
   }
 
   V.ledger = function () {
-    var all = ledgerComputed();
-    var isAll = state.ledgerDate === 'all';
-    var dateRows = isAll ? all.rows : all.rows.filter(function (r) { return r.date === state.ledgerDate; });
+    var mk = currentLedgerMonth();
+    var prevMk = prevMonthKey(mk);
+    var thisMonthKey = todayMonthStr();
+    var isThisMonth = mk === thisMonthKey;
 
-    // ยอดคงเหลือสะสม ณ สิ้นวันที่เลือก (ถ้าวันนั้นไม่มีรายการ ใช้ยอดล่าสุดของวันก่อนหน้า)
-    var balanceAsOf = all.opening;
-    all.rows.forEach(function (r) { if (isAll || r.date <= state.ledgerDate) balanceAsOf = r.balance; });
+    var m = ledgerComputed(mk);                 // รอบบัญชีของเดือนที่กำลังดู (เดือนเดียว)
+    var prevTotals = ledgerMonthTotals(prevMk); // เดือนก่อนหน้า 1 เดือนเท่านั้น
+    var prevClosing = ledgerClosingOf(prevMk);
+    var prevHasData = ledgerEntriesOfMonth(prevMk).length > 0;
+
+    // ตัวกรองรายวันที่ค้างอยู่ต้องอยู่ในรอบเดือนที่กำลังดูเสมอ
+    // เคสจริง: เปิดหน้าเว็บค้างไว้ข้ามเดือน (เช่นค้างตั้งแต่ 30 ก.ย. พอถึง 1 ต.ค. รอบเปลี่ยนเป็น ต.ค.
+    // แต่ ledgerDate ยังเป็น '2026-09-30') ถ้าไม่รีเซ็ตจะกรองไม่เจอรายการเลยและช่องวันที่จะหลุดช่วง min/max
+    if (state.ledgerDate && state.ledgerDate !== 'all' && monthKeyOf(state.ledgerDate) !== mk) {
+      state.ledgerDate = isThisMonth ? todayStr() : 'all';
+    }
+
+    var isAll = state.ledgerDate === 'all';
+    var dateRows = isAll ? m.rows : m.rows.filter(function (r) { return r.date === state.ledgerDate; });
+
+    // ยอดคงเหลือ ณ สิ้นวันที่เลือก (นับเฉพาะภายในเดือนนี้ ไม่ข้ามเดือน)
+    var balanceAsOf = m.opening;
+    m.rows.forEach(function (r) { if (isAll || r.date <= state.ledgerDate) balanceAsOf = r.balance; });
     var dayIncome = 0, dayExpense = 0;
     dateRows.forEach(function (r) { if (r.type === 'income') dayIncome += r.amount; else dayExpense += r.amount; });
 
-    var html = head('บัญชีรายวัน', 'สมุดเงินสดประจำวัน — บันทึกรายรับ-รายจ่าย ระบบคำนวณยอดคงเหลือสะสมให้อัตโนมัติ');
+    var html = head('บัญชีรายวัน',
+      'สมุดเงินสดแยกเป็นรอบรายเดือน — แต่ละเดือนเริ่มนับใหม่จากยอดยกมาของเดือนนั้น');
 
-    html += '<div class="grid cols-4">' +
-      stat('ยอดคงเหลือสะสมล่าสุด', money(all.latestBalance) + ' <span class="sub">บาท</span>',
-        'ยอดยกมา + รายรับ - รายจ่ายทั้งหมด', all.latestBalance >= 0 ? 'good' : '') +
-      stat('รายรับสะสมทั้งหมด', money(all.totalIncome) + ' <span class="sub">บาท</span>', '') +
-      stat('รายจ่ายสะสมทั้งหมด', money(all.totalExpense) + ' <span class="sub">บาท</span>', '') +
-      stat('กำไร/ขาดทุนสะสม', money(all.net) + ' <span class="sub">บาท</span>', '', all.net >= 0 ? 'good' : 'bad') +
+    /* ---------- แถบเลือกรอบบัญชี ---------- */
+    var months = ledgerMonths();
+    html += '<div class="card"><h2>รอบบัญชี <span class="hint">1 เดือน = 1 รอบ</span></h2>' +
+      '<div class="actions" style="align-items:center">' +
+        '<button class="btn" data-act="ldg-month-prev">◀ เดือนก่อน</button>' +
+        '<select id="ldgMonthSel" data-bind="lmk" data-fkey="lmk" style="max-width:220px">' +
+          months.map(function (k) {
+            return '<option value="' + k + '"' + (k === mk ? ' selected' : '') + '>' + esc(thMonth(k)) +
+              (k === thisMonthKey ? ' (เดือนปัจจุบัน)' : '') + '</option>';
+          }).join('') +
+        '</select>' +
+        '<button class="btn" data-act="ldg-month-next"' + (mk >= thisMonthKey ? ' disabled' : '') + '>เดือนถัดไป ▶</button>' +
+        '<button class="btn' + (isThisMonth ? ' primary' : '') + '" data-act="ldg-month-now">เดือนปัจจุบัน</button>' +
+      '</div>' +
+      (isThisMonth
+        ? ''
+        : '<div class="note" style="margin-top:12px">กำลังดูข้อมูลย้อนหลังของ <strong>' + esc(thMonth(mk)) +
+          '</strong> — ข้อมูลเดือนเก่าถูกเก็บไว้ครบ ไม่ได้ถูกลบ</div>') +
     '</div>';
 
+    /* ---------- ยอดยกมา + สรุปรอบเดือนนี้ ---------- */
+    html += '<div class="grid cols-4">' +
+      stat('ยอดยกมา', money(m.opening) + ' <span class="sub">บาท</span>',
+        (isThisMonth ? 'เดือนปัจจุบัน · ' : 'รอบ ') + thMonth(mk), 'brand') +
+      stat('รายรับเดือนนี้', money(m.totalIncome) + ' <span class="sub">บาท</span>', thMonth(mk)) +
+      stat('รายจ่ายเดือนนี้', money(m.totalExpense) + ' <span class="sub">บาท</span>', thMonth(mk)) +
+      stat('คงเหลือสิ้นเดือน', money(m.closing) + ' <span class="sub">บาท</span>',
+        'ยอดยกมา + รายรับ − รายจ่าย ของเดือนนี้', m.closing >= 0 ? 'good' : 'bad') +
+    '</div>';
+
+    /* ---------- กล่องเล็ก: เดือนที่แล้ว (ย้อนหลังได้เดือนเดียวเท่านั้น) ---------- */
+    html += '<div class="card"><h2>ที่มาของยอดยกมา ' +
+        '<span class="hint">อ้างอิงเดือนก่อนหน้าเพียง 1 เดือน ไม่รวมยอดสะสมจากเดือนอื่น</span></h2>' +
+      '<div class="grid cols-3">' +
+        stat('เดือนที่แล้ว', money(prevClosing) + ' <span class="sub">บาท</span>',
+          thMonth(prevMk) + ' · ยอดคงเหลือสิ้นเดือน') +
+        stat('กำไร/ขาดทุนเดือนที่แล้ว', money(prevTotals.net) + ' <span class="sub">บาท</span>',
+          prevHasData ? thMonth(prevMk) : 'ไม่มีรายการในเดือนนั้น',
+          prevTotals.net >= 0 ? 'good' : 'bad') +
+        stat('ยอดยกมาของ ' + thMonth(mk), money(m.opening) + ' <span class="sub">บาท</span>',
+          m.openingIsExplicit ? 'ตั้งค่าเองไว้ (ปิดรอบแล้ว)' : 'ยอดสะสมจากเดือนที่แล้ว') +
+      '</div>' +
+      '<div class="note" style="margin-top:14px">' +
+        'ยอดยกมาของ <strong>' + esc(thMonth(mk)) + '</strong> = ยอดคงเหลือสิ้นเดือนของ <strong>' +
+        esc(thMonth(prevMk)) + '</strong> เท่านั้น — ' +
+        (m.openingIsExplicit
+          ? 'ตอนนี้เดือนนี้ถูก “ปิดรอบ” ไว้แล้ว ระบบจะใช้ค่าที่ตั้งไว้เป็นหลัก ไม่คำนวณย้อนจากเดือนก่อนอีก'
+          : 'ถ้าต้องการล็อกตัวเลขนี้ไว้ไม่ให้เปลี่ยนตามการแก้ย้อนหลัง ให้กด “ปิดรอบเดือนนี้” ด้านล่าง') +
+      '</div>' +
+    '</div>';
+
+    /* ---------- ฟอร์มบันทึกรายการ (คงเดิม) ---------- */
     html += '<div class="card"><h2>บันทึกรายการใหม่</h2><div class="grid cols-4">' +
-        f('วันที่', '<input type="date" id="ldgDate" value="' + esc(isAll ? todayStr() : state.ledgerDate) + '">') +
+        f('วันที่', '<input type="date" id="ldgDate" value="' + esc(defaultEntryDate(mk)) + '">') +
         f('รายการ', '<input type="text" id="ldgDesc" placeholder="เช่น ขายเค้กกล้วยหอม 10 กล่อง">') +
         f('จำนวนเงิน (บาท)', '<input type="number" id="ldgAmount" min="0" step="0.01" placeholder="0.00">') +
         f('หมวด', ledgerCategorySelect()) +
@@ -735,22 +960,25 @@ export function bootLegacyApp() {
       '<div class="actions" style="margin-top:14px"><button class="btn primary" data-act="ldg-add">+ บันทึกรายการ</button></div>' +
     '</div>';
 
-    html += '<div class="card"><h2>รายการ</h2>' +
+    /* ---------- รายการในรอบเดือนนี้ ---------- */
+    html += '<div class="card"><h2>รายการ <span class="hint">' + esc(thMonth(mk)) + '</span></h2>' +
       '<div class="grid cols-2" style="align-items:end;margin-bottom:14px">' +
-        f('ดูรายการวันที่', '<input type="date" data-bind="lfd" data-fkey="lfd" value="' + esc(isAll ? '' : state.ledgerDate) + '">') +
+        f('ดูรายการวันที่', '<input type="date" data-bind="lfd" data-fkey="lfd" value="' + esc(isAll ? '' : state.ledgerDate) + '"' +
+          ' min="' + mk + '-01" max="' + monthLastDay(mk) + '">') +
         '<div class="actions">' +
-          '<button class="btn' + (isAll ? ' primary' : '') + '" data-act="ldg-showall">ดูทั้งหมด</button>' +
-          '<button class="btn' + (!isAll && state.ledgerDate === todayStr() ? ' primary' : '') + '" data-act="ldg-today">วันนี้</button>' +
+          '<button class="btn' + (isAll ? ' primary' : '') + '" data-act="ldg-showall">ทั้งเดือน</button>' +
+          (isThisMonth ? '<button class="btn' + (!isAll && state.ledgerDate === todayStr() ? ' primary' : '') + '" data-act="ldg-today">วันนี้</button>' : '') +
         '</div>' +
       '</div>' +
       (!isAll ? '<div class="grid cols-3" style="margin-bottom:14px">' +
-          stat('รายรับวันนี้', money(dayIncome) + ' <span class="sub">บาท</span>', '') +
-          stat('รายจ่ายวันนี้', money(dayExpense) + ' <span class="sub">บาท</span>', '') +
-          stat('คงเหลือสะสม ณ สิ้นวันนี้', money(balanceAsOf) + ' <span class="sub">บาท</span>', '', balanceAsOf >= 0 ? 'good' : 'bad') +
+          stat('รายรับวันนี้', money(dayIncome) + ' <span class="sub">บาท</span>', thDate(state.ledgerDate)) +
+          stat('รายจ่ายวันนี้', money(dayExpense) + ' <span class="sub">บาท</span>', thDate(state.ledgerDate)) +
+          stat('คงเหลือ ณ สิ้นวันนี้', money(balanceAsOf) + ' <span class="sub">บาท</span>',
+            'นับจากยอดยกมาของเดือนนี้', balanceAsOf >= 0 ? 'good' : 'bad') +
         '</div>' : '') +
       (dateRows.length
         ? '<div class="table-wrap"><table><thead><tr>' +
-            '<th>วันที่</th><th>รายการ</th><th>หมวด</th><th class="num">รายรับ</th><th class="num">รายจ่าย</th><th class="num">คงเหลือสะสม</th><th></th>' +
+            '<th>วันที่</th><th>รายการ</th><th>หมวด</th><th class="num">รายรับ</th><th class="num">รายจ่าย</th><th class="num">คงเหลือ</th><th></th>' +
           '</tr></thead><tbody>' +
           dateRows.map(function (r) {
             return '<tr>' +
@@ -763,16 +991,42 @@ export function bootLegacyApp() {
               '<td><button class="btn ghost sm" data-act="ldg-del" data-id="' + r.id + '">✕</button></td>' +
             '</tr>';
           }).join('') +
-          '</tbody></table></div>'
-        : '<p class="empty">ยังไม่มีรายการ' + (isAll ? '' : 'ในวันที่เลือก') + '</p>') +
+          '</tbody></table>' +
+          '<table><tfoot><tr>' +
+            '<td>รวม' + (isAll ? 'ทั้งเดือน' : 'วันนี้') + '</td>' +
+            '<td class="num good">' + money(isAll ? m.totalIncome : dayIncome) + '</td>' +
+            '<td class="num bad">' + money(isAll ? m.totalExpense : dayExpense) + '</td>' +
+            '<td class="num">' + money(isAll ? m.closing : balanceAsOf) + '</td>' +
+          '</tr></tfoot></table></div>'
+        : '<p class="empty">ยังไม่มีรายการ' + (isAll ? 'ในเดือนนี้' : 'ในวันที่เลือก') + '</p>') +
       '<div class="actions" style="margin-top:14px">' +
-        '<button class="btn" data-act="ldg-export">ดาวน์โหลดบัญชี (CSV)</button>' +
+        '<button class="btn" data-act="ldg-export">ดาวน์โหลดบัญชีเดือนนี้ (CSV)</button>' +
         '<button class="btn" data-act="print">พิมพ์</button>' +
       '</div>' +
     '</div>';
 
-    html += '<div class="card"><h2>ยอดยกมา <span class="hint">ยอดคงเหลือก่อนเริ่มบันทึกในระบบนี้ (ถ้ามี)</span></h2>' +
-      f('ยอดยกมา (บาท)', inp('number', 'lob', all.opening, 'step="0.01"')) +
+    /* ---------- ตั้ง/ปิดรอบยอดยกมา ---------- */
+    html += '<div class="card"><h2>ยอดยกมาของ ' + esc(thMonth(mk)) +
+        ' <span class="hint">ปกติระบบคำนวณให้จากเดือนที่แล้วอัตโนมัติ</span></h2>' +
+      '<div class="grid cols-2" style="align-items:end">' +
+        f('ยอดยกมา (บาท)', inp('number', 'lmo', m.opening, 'step="0.01"')) +
+        '<div class="actions">' +
+          (m.openingIsExplicit
+            ? '<button class="btn danger" data-act="ldg-open-reset">ยกเลิกการปิดรอบ (ให้คำนวณอัตโนมัติ)</button>'
+            : '<button class="btn" data-act="ldg-open-lock">ปิดรอบเดือนนี้ (ล็อกยอดยกมา)</button>') +
+        '</div>' +
+      '</div>' +
+      '<div class="note" style="margin-top:14px">' +
+        (m.openingIsExplicit
+          ? 'ยอดยกมาของเดือนนี้ถูกล็อกไว้แล้ว การแก้รายการย้อนหลังในเดือนก่อน ๆ จะไม่ทำให้ตัวเลขนี้เปลี่ยน'
+          : 'ตอนนี้คำนวณอัตโนมัติจากยอดคงเหลือสิ้นเดือนของ ' + esc(thMonth(prevMk)) +
+            ' — แก้ตัวเลขในช่องนี้ หรือกดปิดรอบ เพื่อกำหนดเอง') +
+      '</div>' +
+      (ledgerFirstMonth() === null || mk <= ledgerFirstMonth()
+        ? '<div class="grid cols-2" style="margin-top:14px">' +
+            f('ยอดตั้งต้นก่อนเริ่มใช้ระบบ (บาท)', inp('number', 'lob', ledgerData().openingBalance || 0, 'step="0.01"')) +
+          '</div>'
+        : '') +
     '</div>';
 
     return html;
@@ -977,7 +1231,12 @@ export function bootLegacyApp() {
     else if (part[0] === 'g') { state.data.ingredients[+part[2]][part[1]] = val; }
     else if (part[0] === 's') { state.targetPieces = val; render(); return; }
     else if (part[0] === 'lfd') { state.ledgerDate = val || 'all'; render(); return; }
-    else if (part[0] === 'lob') { state.data.ledger.openingBalance = val; }
+    else if (part[0] === 'lmk') { setLedgerMonth(val); return; }
+    else if (part[0] === 'lmo') {
+      // แก้ยอดยกมาในช่อง = ปิดรอบเดือนนั้นไปในตัว (ล็อกค่าไว้ ไม่คำนวณย้อนจากเดือนก่อนอีก)
+      ledgerData().monthlyOpenings[currentLedgerMonth()] = money2(val);
+    }
+    else if (part[0] === 'lob') { ledgerData().openingBalance = val; }
 
     save();
     render();
@@ -1099,6 +1358,13 @@ export function bootLegacyApp() {
       });
       state.ledgerFormError = '';
       state.ledgerDate = ldgDate;
+      // ถ้าบันทึกลงเดือนอื่น (เช่นเลือกวันที่ย้อนหลัง) ให้สลับไปดูรอบบัญชีของเดือนนั้นทันที
+      // ไม่งั้นผู้ใช้จะกดบันทึกแล้วไม่เห็นรายการที่เพิ่งเพิ่ม เพราะมันไปอยู่คนละรอบเดือน
+      var addedMk = monthKeyOf(ldgDate);
+      if (addedMk !== currentLedgerMonth()) {
+        state.ledgerMonth = addedMk;
+        state.ledgerMonthPinned = addedMk !== todayMonthStr();
+      }
       save('บันทึกรายการแล้ว'); render();
 
     } else if (act === 'ldg-del') {
@@ -1111,8 +1377,31 @@ export function bootLegacyApp() {
       render();
 
     } else if (act === 'ldg-today') {
+      setLedgerMonth(todayMonthStr());
       state.ledgerDate = todayStr();
       render();
+
+    } else if (act === 'ldg-month-prev') {
+      setLedgerMonth(prevMonthKey(currentLedgerMonth()));
+
+    } else if (act === 'ldg-month-next') {
+      var nx = nextMonthKey(currentLedgerMonth());
+      if (nx > todayMonthStr()) return; // ไม่ให้ข้ามไปเดือนอนาคต
+      setLedgerMonth(nx);
+
+    } else if (act === 'ldg-month-now') {
+      setLedgerMonth(todayMonthStr());
+
+    } else if (act === 'ldg-open-lock') {
+      // ล็อกยอดยกมาของเดือนนี้ด้วยค่าที่ระบบคำนวณได้ตอนนี้ (ปิดรอบ)
+      var lockMk = currentLedgerMonth();
+      ledgerData().monthlyOpenings[lockMk] = money2(ledgerOpeningOf(lockMk));
+      save('ปิดรอบ ' + thMonth(lockMk) + ' แล้ว'); render();
+
+    } else if (act === 'ldg-open-reset') {
+      if (!confirm('ยกเลิกการปิดรอบเดือนนี้ แล้วให้ระบบคำนวณยอดยกมาจากเดือนที่แล้วอัตโนมัติ?')) return;
+      delete ledgerData().monthlyOpenings[currentLedgerMonth()];
+      save('กลับไปคำนวณยอดยกมาอัตโนมัติแล้ว'); render();
 
     } else if (act === 'ldg-export') {
       exportLedgerCsv();
@@ -1166,15 +1455,20 @@ export function bootLegacyApp() {
     download('ใบเตรียมของ-' + r.name + '.csv', csv(rows), 'text/csv;charset=utf-8');
   }
 
+  /** ส่งออกเฉพาะรอบบัญชีของเดือนที่กำลังดู — 1 ไฟล์ = 1 รอบเดือน ไม่ปนข้ามเดือน */
   function exportLedgerCsv() {
-    var all = ledgerComputed();
+    var mk = currentLedgerMonth();
+    var m = ledgerComputed(mk);
+    var prevMk = prevMonthKey(mk);
     var rows = [
       ['บัญชีรายวัน — Bakery By Khunkai'],
-      ['ยอดยกมา (บาท)', all.opening.toFixed(2)],
+      ['รอบบัญชี', thMonth(mk)],
+      ['ยอดยกมา (บาท)', m.opening.toFixed(2),
+        m.openingIsExplicit ? 'กำหนดเอง (ปิดรอบแล้ว)' : 'ยอดคงเหลือสิ้นเดือนของ ' + thMonth(prevMk)],
       [],
-      ['วันที่', 'รายการ', 'หมวด', 'รายรับ', 'รายจ่าย', 'คงเหลือสะสม']
+      ['วันที่', 'รายการ', 'หมวด', 'รายรับ', 'รายจ่าย', 'คงเหลือ']
     ];
-    all.rows.forEach(function (r) {
+    m.rows.forEach(function (r) {
       rows.push([
         r.date, r.desc, ledgerCatLabel(r.category),
         r.type === 'income' ? r.amount.toFixed(2) : '',
@@ -1182,8 +1476,10 @@ export function bootLegacyApp() {
         r.balance.toFixed(2)
       ]);
     });
-    rows.push(['รวม', '', '', all.totalIncome.toFixed(2), all.totalExpense.toFixed(2), all.latestBalance.toFixed(2)]);
-    download('บัญชีรายวัน.csv', csv(rows), 'text/csv;charset=utf-8');
+    rows.push(['รวมทั้งเดือน', '', '', m.totalIncome.toFixed(2), m.totalExpense.toFixed(2), '']);
+    rows.push(['กำไร/ขาดทุนเดือนนี้', '', '', '', '', m.net.toFixed(2)]);
+    rows.push(['คงเหลือสิ้นเดือน', '', '', '', '', m.closing.toFixed(2)]);
+    download('บัญชีรายวัน-' + mk + '.csv', csv(rows), 'text/csv;charset=utf-8');
   }
 
   function importFile(file) {
@@ -1198,7 +1494,7 @@ export function bootLegacyApp() {
         state.data = d;
         state.data.stateVersion = keepVersionImport;
         if (!d.multipliers) d.multipliers = clone(SEED_DATA.multipliers);
-        if (!d.ledger || !Array.isArray(d.ledger.entries)) d.ledger = { openingBalance: 0, entries: [] };
+        if (!d.ledger || !Array.isArray(d.ledger.entries)) d.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
         state.recipeId = null;
         save('นำเข้าข้อมูลเรียบร้อย'); render();
       } catch (err) {
@@ -1213,7 +1509,7 @@ export function bootLegacyApp() {
   // 1) วาดหน้าจอทันทีด้วยข้อมูลที่แคชไว้ในเครื่อง (ให้เปิดเว็บได้ไวแม้เน็ตช้า)
   state.data = loadLocal();
   if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
-    state.data.ledger = { openingBalance: 0, entries: [] };
+    state.data.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
   }
   if (state.data.recipes.length) state.recipeId = state.data.recipes[0].id;
   state.ledgerDate = todayStr();
@@ -1248,7 +1544,7 @@ export function bootLegacyApp() {
 
     state.data = remote;
     if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
-      state.data.ledger = { openingBalance: 0, entries: [] };
+      state.data.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
     }
     cacheLocal();
     if (!state.data.recipes.some(function (r) { return r.id === state.recipeId; })) {
