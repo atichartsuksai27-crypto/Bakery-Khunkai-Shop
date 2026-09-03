@@ -423,6 +423,82 @@ input[type=checkbox] {
 .ldg-day-body { padding: 0 14px 14px; margin: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .ldg-day-body table { font-size: 13.5px; }
 
+/* ---------- บัญชีรายวัน: Calendar เลือกรอบบัญชี + วันที่ (สไตล์เลือกวันที่จองตั๋วเครื่องบิน) ---------- */
+.ldg-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.ldg-cal-title {
+  width: auto;
+  max-width: 260px;
+  background: none;
+  border-color: transparent;
+  text-align: center;
+  font-weight: 600;
+  font-size: 15px;
+  padding: 8px 10px;
+}
+.ldg-cal-title:hover { background: var(--surface-2); }
+.ldg-cal-dow {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-top: 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-align: center;
+}
+.ldg-cal-dow .is-sun { color: var(--bad); }
+.ldg-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-top: 6px;
+}
+.cal-cell {
+  aspect-ratio: 1 / 1;
+  min-height: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 2px;
+  transition: background .15s ease, border-color .15s ease;
+}
+.cal-cell:hover { background: var(--surface-3); }
+.cal-cell.cal-empty { background: none; cursor: default; pointer-events: none; }
+.cal-daynum { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cal-cell.is-sun .cal-daynum { color: var(--bad); }
+.cal-amt {
+  font-size: 10.5px;
+  color: var(--good);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.cal-cell.is-today { border-color: var(--brand); }
+.cal-cell.is-selected {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+.cal-cell.is-selected .cal-daynum,
+.cal-cell.is-selected .cal-amt { color: #fff; }
+@media (max-width: 640px) {
+  .cal-cell { min-height: 44px; }
+  .cal-daynum { font-size: 13px; }
+  .cal-amt { font-size: 9px; }
+}
+
 /* ---------- toast ---------- */
 .toast {
   position: fixed;

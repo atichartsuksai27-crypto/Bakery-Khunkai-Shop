@@ -860,6 +860,80 @@ export function bootLegacyApp() {
       '</tbody></table>';
   }
 
+  /** วันในสัปดาห์ของวันที่ 1 ของเดือน mk แปลงให้ 0=จันทร์ .. 6=อาทิตย์ (ปฏิทินไทยเริ่มจันทร์)
+   *  ใช้จัดตำแหน่งช่องว่างนำหน้าใน Calendar grid ให้วันที่ 1 ตกคอลัมน์ที่ถูกต้อง */
+  function monthStartWeekday(mk) {
+    var y = parseInt(mk.slice(0, 4), 10);
+    var mo = parseInt(mk.slice(5, 7), 10);
+    var day = new Date(Date.UTC(y, mo - 1, 1)).getUTCDay(); // 0=อาทิตย์ .. 6=เสาร์
+    return (day + 6) % 7;
+  }
+
+  /** ยอดรายรับรวมต่อวัน (key เป็น 'YYYY-MM-DD') ของเดือน mk — โชว์ใต้ตัวเลขวันที่ใน Calendar
+   *  เหมือนราคาต่อวันในหน้าเลือกวันที่จองตั๋วเครื่องบิน */
+  function ledgerDayIncome(mk) {
+    var map = {};
+    ledgerEntriesOfMonth(mk).forEach(function (e) {
+      if (e.type !== 'income') return;
+      map[e.date] = (map[e.date] || 0) + e.amount;
+    });
+    return map;
+  }
+
+  var CAL_DOW_LABELS = ['จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส', 'อา'];
+
+  /** Calendar เลือกรอบบัญชี + วันที่ในหน้าเดียว (แทนที่การ์ด "รอบบัญชี" เดิม + ช่อง "ดูรายการวันที่" เดิม)
+   *  เปลี่ยนเดือนได้จากหัวปฏิทิน (เดือนก่อน/ถัดไป/dropdown) แตะวันที่ใดก็กรองรายการของวันนั้นทันที
+   *  ยังคงกฎ "1 เดือน = 1 รอบ" เดิม — สลับได้แค่ทีละเดือน ไม่แสดงวันของเดือนอื่นปนในกริดเดียวกัน */
+  function ledgerCalendarHtml(mk, months, thisMonthKey, isThisMonth, isAll, selectedDate) {
+    var dayIncome = ledgerDayIncome(mk);
+    var startOffset = monthStartWeekday(mk);
+    var lastDayNum = parseInt(monthLastDay(mk).slice(-2), 10);
+    var todayIso = todayStr();
+
+    var cells = '';
+    for (var i = 0; i < startOffset; i++) cells += '<div class="cal-cell cal-empty"></div>';
+    for (var d = 1; d <= lastDayNum; d++) {
+      var dateStr = mk + '-' + (d < 10 ? '0' + d : String(d));
+      var col = (startOffset + d - 1) % 7;
+      var income = dayIncome[dateStr];
+      cells += '<button type="button" class="cal-cell' +
+        (col === 6 ? ' is-sun' : '') +
+        (dateStr === todayIso ? ' is-today' : '') +
+        (!isAll && dateStr === selectedDate ? ' is-selected' : '') +
+        '" data-act="ldg-cal-pick" data-date="' + dateStr + '">' +
+        '<span class="cal-daynum">' + d + '</span>' +
+        (income ? '<span class="cal-amt">' + num(income, 0) + '</span>' : '') +
+        '</button>';
+    }
+
+    return '<div class="card ldg-cal"><h2>เลือกวันที่ <span class="hint">แตะวันที่เพื่อดูรายการ · ตัวเลขใต้วันคือยอดขายวันนั้น</span></h2>' +
+      '<div class="ldg-cal-head">' +
+        '<button type="button" class="btn ghost sm" data-act="ldg-month-prev" aria-label="เดือนก่อน">‹</button>' +
+        '<select id="ldgMonthSel" data-bind="lmk" data-fkey="lmk" class="ldg-cal-title">' +
+          months.map(function (k) {
+            return '<option value="' + k + '"' + (k === mk ? ' selected' : '') + '>' + esc(thMonth(k)) +
+              (k === thisMonthKey ? ' (เดือนปัจจุบัน)' : '') + '</option>';
+          }).join('') +
+        '</select>' +
+        '<button type="button" class="btn ghost sm" data-act="ldg-month-next"' + (mk >= thisMonthKey ? ' disabled' : '') + ' aria-label="เดือนถัดไป">›</button>' +
+      '</div>' +
+      '<div class="ldg-cal-dow">' + CAL_DOW_LABELS.map(function (l, i) {
+        return '<span' + (i === 6 ? ' class="is-sun"' : '') + '>' + esc(l) + '</span>';
+      }).join('') + '</div>' +
+      '<div class="ldg-cal-grid">' + cells + '</div>' +
+      '<div class="actions" style="margin-top:14px">' +
+        '<button type="button" class="btn' + (isAll ? ' primary' : '') + '" data-act="ldg-showall">ทั้งเดือน</button>' +
+        (isThisMonth ? '<button type="button" class="btn' + (!isAll && selectedDate === todayIso ? ' primary' : '') + '" data-act="ldg-today">วันนี้</button>' : '') +
+        (isThisMonth ? '' : '<button type="button" class="btn" data-act="ldg-month-now">กลับไปเดือนปัจจุบัน</button>') +
+      '</div>' +
+      (isThisMonth
+        ? ''
+        : '<div class="note" style="margin-top:12px">กำลังดูข้อมูลย้อนหลังของ <strong>' + esc(thMonth(mk)) +
+          '</strong> — ข้อมูลเดือนเก่าถูกเก็บไว้ครบ ไม่ได้ถูกลบ</div>') +
+    '</div>';
+  }
+
   V.ledger = function () {
     var mk = currentLedgerMonth();
     var thisMonthKey = todayMonthStr();
@@ -886,25 +960,9 @@ export function bootLegacyApp() {
     var html = head('บัญชีรายวัน',
       'สมุดเงินสดแยกเป็นรอบรายเดือน — แต่ละเดือนสรุปแยกจากกัน ไม่มีการยกยอดข้ามเดือน');
 
-    /* ---------- แถบเลือกรอบบัญชี ---------- */
+    /* ---------- Calendar เลือกรอบบัญชี + วันที่ (เหมือนหน้าเลือกวันที่จองตั๋วเครื่องบิน) ---------- */
     var months = ledgerMonths();
-    html += '<div class="card"><h2>รอบบัญชี <span class="hint">1 เดือน = 1 รอบ</span></h2>' +
-      '<div class="actions" style="align-items:center">' +
-        '<button class="btn" data-act="ldg-month-prev">◀ เดือนก่อน</button>' +
-        '<select id="ldgMonthSel" data-bind="lmk" data-fkey="lmk" style="max-width:220px">' +
-          months.map(function (k) {
-            return '<option value="' + k + '"' + (k === mk ? ' selected' : '') + '>' + esc(thMonth(k)) +
-              (k === thisMonthKey ? ' (เดือนปัจจุบัน)' : '') + '</option>';
-          }).join('') +
-        '</select>' +
-        '<button class="btn" data-act="ldg-month-next"' + (mk >= thisMonthKey ? ' disabled' : '') + '>เดือนถัดไป ▶</button>' +
-        '<button class="btn' + (isThisMonth ? ' primary' : '') + '" data-act="ldg-month-now">เดือนปัจจุบัน</button>' +
-      '</div>' +
-      (isThisMonth
-        ? ''
-        : '<div class="note" style="margin-top:12px">กำลังดูข้อมูลย้อนหลังของ <strong>' + esc(thMonth(mk)) +
-          '</strong> — ข้อมูลเดือนเก่าถูกเก็บไว้ครบ ไม่ได้ถูกลบ</div>') +
-    '</div>';
+    html += ledgerCalendarHtml(mk, months, thisMonthKey, isThisMonth, isAll, state.ledgerDate);
 
     /* ---------- สรุปรอบเดือนนี้ ---------- */
     html += '<div class="grid cols-3">' +
@@ -942,15 +1000,7 @@ export function bootLegacyApp() {
     // เพื่อให้ยังกางค้างอยู่ต่อได้แม้มีการ render ใหม่ (เช่น แก้ไข/ลบรายการในวันที่กางอยู่)
     var dayGroups = isAll ? ledgerGroupByDay(dateRows) : [];
 
-    html += '<div class="card"><h2>รายการ <span class="hint">' + esc(thMonth(mk)) + '</span></h2>' +
-      '<div class="grid cols-2" style="align-items:end;margin-bottom:14px">' +
-        f('ดูรายการวันที่', '<input type="date" data-bind="lfd" data-fkey="lfd" value="' + esc(isAll ? '' : state.ledgerDate) + '"' +
-          ' min="' + mk + '-01" max="' + monthLastDay(mk) + '">') +
-        '<div class="actions">' +
-          '<button class="btn' + (isAll ? ' primary' : '') + '" data-act="ldg-showall">ทั้งเดือน</button>' +
-          (isThisMonth ? '<button class="btn' + (!isAll && state.ledgerDate === todayStr() ? ' primary' : '') + '" data-act="ldg-today">วันนี้</button>' : '') +
-        '</div>' +
-      '</div>' +
+    html += '<div class="card"><h2>รายการ <span class="hint">' + esc(thMonth(mk)) + (isAll ? '' : ' · ' + thDate(state.ledgerDate)) + '</span></h2>' +
       (!isAll ? '<div class="grid cols-3" style="margin-bottom:14px">' +
           stat('รายรับวันนี้', money(dayIncome) + ' <span class="sub">บาท</span>', thDate(state.ledgerDate)) +
           stat('รายจ่ายวันนี้', money(dayExpense) + ' <span class="sub">บาท</span>', thDate(state.ledgerDate)) +
@@ -1193,7 +1243,6 @@ export function bootLegacyApp() {
     else if (part[0] === 'i' && r) { r.items[+part[1]].ingredientId = val; }
     else if (part[0] === 'g') { state.data.ingredients[+part[2]][part[1]] = val; }
     else if (part[0] === 's') { state.targetPieces = val; render(); return; }
-    else if (part[0] === 'lfd') { state.ledgerDate = val || 'all'; render(); return; }
     else if (part[0] === 'lmk') { setLedgerMonth(val); return; }
 
     save();
@@ -1365,6 +1414,11 @@ export function bootLegacyApp() {
 
     } else if (act === 'ldg-showall') {
       state.ledgerDate = 'all';
+      render();
+
+    } else if (act === 'ldg-cal-pick') {
+      // แตะวันที่บน Calendar — กรองรายการของวันนั้นทันที (เหมือนเลือกวันที่บนหน้าจองตั๋วเครื่องบิน)
+      state.ledgerDate = b.dataset.date;
       render();
 
     } else if (act === 'ldg-today') {
