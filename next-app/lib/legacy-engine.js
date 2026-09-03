@@ -56,7 +56,7 @@ export function bootLegacyApp() {
   /* หมวดบัญชีรายวัน — รายรับ/รายจ่าย */
   var INCOME_CATS = [
     { id: 'sale-store', label: 'ขายหน้าร้าน' },
-    { id: 'sale-online', label: 'ขายออนไลน์/เดลิเวอรี' },
+    { id: 'sale-online', label: 'สาขา 2 G-Market' },
     { id: 'other-income', label: 'รายรับอื่นๆ' }
   ];
   var EXPENSE_CATS = [
