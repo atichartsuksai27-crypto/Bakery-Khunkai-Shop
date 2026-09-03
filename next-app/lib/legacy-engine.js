@@ -420,16 +420,40 @@ export function bootLegacyApp() {
     return r || list[0];
   }
 
-  /* ---- จำแนกวัตถุดิบตั้งต้น / กึ่งสำเร็จรูป — derive จากข้อมูลเดิมล้วน ๆ ไม่มีการเก็บ "ประเภท" ไว้ตรง ๆ ที่ไหน
-   * Intermediate = มีสูตร (recipe) ที่ตั้งค่า producesIngredientId ชี้มาที่วัตถุดิบนี้
-   * Raw          = ไม่มีสูตรไหนผลิตมันเลย (พฤติกรรมของวัตถุดิบทุกตัวก่อนมี feature นี้ ยังคงเป็นแบบนี้ต่อไป) */
+  /* ---- จำแนกวัตถุดิบตั้งต้น / วัตถุดิบที่ผลิตขึ้น — derive อัตโนมัติจากข้อมูลเดิมล้วน ๆ
+   * ไม่มีการเก็บ "ประเภท" ไว้ตรง ๆ ที่ไหน และไม่มี input ให้ผู้ใช้เลือก/กรอกประเภทเอง
+   *
+   * สัญญาณเดียวที่มีอยู่แล้วจริงในข้อมูลเดิมที่บอกได้ว่า "วัตถุดิบตัวนี้เป็นผลผลิตจากกระบวนการผลิต"
+   * คือชื่อ — recipe.name และ ingredient.name เป็น field ข้อความที่มีอยู่แล้วทั้งคู่ ถ้าตั้งชื่อสูตร
+   * ตรงกับชื่อวัตถุดิบเป๊ะ (เช่น สูตร "ไส้กล้วยกวน" ผลิตวัตถุดิบ "ไส้กล้วยกวน") นั่นคือหลักฐานว่าวัตถุดิบ
+   * ตัวนั้นคือ OUTPUT ของสูตรนั้น ไม่ใช่ของที่ซื้อเข้ามาตรง ๆ — ต้องมี items จริงด้วย (ไม่ใช่สูตรเปล่า)
+   * ถึงจะนับว่าเป็น "กระบวนการผลิต" ตามนิยามธุรกิจ
+   *
+   * PROCESSED = เจอสูตรที่ชื่อตรงกับวัตถุดิบนี้ และสูตรนั้นมีวัตถุดิบอื่นประกอบอยู่จริง
+   * RAW       = ไม่เจอ (ค่าเริ่มต้นของวัตถุดิบทุกตัว — พฤติกรรมเดิมก่อนมี feature นี้ไม่เปลี่ยนแปลง) */
+  function normMaterialName(s) {
+    return String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  }
   function producerRecipeOf(ingredientId) {
-    return state.data.recipes.filter(function (r) { return r.producesIngredientId === ingredientId; })[0] || null;
+    var ing = ingById(ingredientId);
+    var key = ing ? normMaterialName(ing.name) : '';
+    if (!key) return null;
+    return state.data.recipes.filter(function (r) {
+      return normMaterialName(r.name) === key && Array.isArray(r.items) && r.items.length > 0;
+    })[0] || null;
   }
   function isIntermediate(ing) {
     return !!(ing && producerRecipeOf(ing.id));
   }
-  var MAT_LABEL = { raw: 'วัตถุดิบตั้งต้น', mid: 'วัตถุดิบกึ่งสำเร็จรูป' };
+  /** ทิศทางกลับของ producerRecipeOf — สูตรนี้ "เป็นผู้ผลิต" วัตถุดิบตัวไหนอยู่ (ถ้ามี) ใช้แสดงผลอย่างเดียว
+   *  ไม่ใช่ input ให้ผู้ใช้ตั้งค่า — ระบบตรวจจับเองจากชื่อสูตร/ชื่อวัตถุดิบที่มีอยู่แล้ว */
+  function producedIngredientOfRecipe(recipe) {
+    if (!recipe || !Array.isArray(recipe.items) || !recipe.items.length) return null;
+    var key = normMaterialName(recipe.name);
+    if (!key) return null;
+    return state.data.ingredients.filter(function (i) { return normMaterialName(i.name) === key; })[0] || null;
+  }
+  var MAT_LABEL = { raw: 'วัตถุดิบตั้งต้น', mid: 'วัตถุดิบที่ผลิตขึ้น' };
   function matKind(ing) { return isIntermediate(ing) ? 'mid' : 'raw'; }
   function matBadge(ing) {
     var kind = matKind(ing);
@@ -583,7 +607,7 @@ export function bootLegacyApp() {
     var c = costOf(r, 1);
     var mults = state.data.multipliers;
 
-    var producedIng = r.producesIngredientId ? ingById(r.producesIngredientId) : null;
+    var producedIng = producedIngredientOfRecipe(r);
     var yieldLabel = producedIng ? ('ผลผลิตที่ได้ (' + esc(producedIng.unit) + ')') : 'จำนวนชิ้นที่ได้ต่อสูตรฐาน';
 
     /* ข้อมูลหัวสูตร */
@@ -593,12 +617,12 @@ export function bootLegacyApp() {
       f('ชื่อสูตรฐาน (เช่น ไข่ 6 ฟอง)', inp('text', 'r.baseLabel', r.baseLabel || '')) +
       f(yieldLabel, inp('number', 'r.basePieces', r.basePieces, 'step="1" min="0"')) +
       '</div>' +
-      '<div class="grid cols-2" style="margin-top:12px">' +
-        f('สูตรนี้ผลิตวัตถุดิบกึ่งสำเร็จรูปหรือไม่', producesSelect('r.producesIngredientId', r)) +
-        (producedIng
-          ? f('สถานะ', matBadge(producedIng) + ' <span class="muted" style="margin-left:6px">ผลิต “' + esc(producedIng.name) + '”</span>')
-          : '') +
-      '</div>' +
+      (producedIng
+        ? '<div class="note" style="margin-top:12px">ระบบตรวจพบอัตโนมัติว่าชื่อสูตรนี้ตรงกับชื่อวัตถุดิบ “' + esc(producedIng.name) +
+          '” ที่มีอยู่ในคลัง — จึงจัดให้วัตถุดิบตัวนั้นเป็น ' + matBadge(producedIng) +
+          ' และใช้ต้นทุนของสูตรนี้ (หารด้วยผลผลิตที่ได้) เป็นต้นทุน/หน่วยของมันโดยอัตโนมัติ' +
+          '<br><span class="muted" style="font-size:12.5px">อยากยกเลิกการจับคู่นี้ ให้เปลี่ยนชื่อสูตรหรือชื่อวัตถุดิบไม่ให้ตรงกัน — ระบบไม่มีช่องให้เลือกประเภทเอง เพราะจำแนกให้อัตโนมัติจากชื่อเสมอ</span></div>'
+        : '') +
       '<div style="margin-top:12px">' + f('หมายเหตุ', inp('text', 'r.note', r.note || '')) + '</div>' +
       '<div class="actions" style="margin-top:14px">' +
         '<button class="btn danger" data-act="del-recipe" data-id="' + r.id + '">ลบสูตรนี้</button>' +
@@ -1229,7 +1253,7 @@ export function bootLegacyApp() {
     return '<input type="' + type + '" data-bind="' + bind + '" data-fkey="' + bind + '" value="' +
       esc(value) + '" ' + (extra || '') + '>';
   }
-  /** dropdown เลือกวัตถุดิบในสูตร — จัดกลุ่มตามประเภท (วัตถุดิบตั้งต้น / กึ่งสำเร็จรูป)
+  /** dropdown เลือกวัตถุดิบในสูตร — จัดกลุ่มตามประเภทที่ระบบตรวจจับให้เองจากชื่อ (วัตถุดิบตั้งต้น / ที่ผลิตขึ้น)
    *  ค่าที่บันทึกยังเป็น ingredientId เดิมของระบบเสมอ ไม่มีการสร้าง id ใหม่หรือ duplicate record ใด ๆ */
   function select(bind, value) {
     var groups = { raw: [], mid: [] };
@@ -1241,28 +1265,6 @@ export function bootLegacyApp() {
         return '<option value="' + i.id + '"' + (i.id === value ? ' selected' : '') + '>' + esc(i.name) + '</option>';
       }).join('') + '</optgroup>';
     }).join('');
-    return '<select data-bind="' + bind + '" data-fkey="' + bind + '">' + body + '</select>';
-  }
-  /** dropdown เลือก "วัตถุดิบที่สูตรนี้ผลิตได้" (ถ้าเป็นสูตรผลิตวัตถุดิบกึ่งสำเร็จรูป)
-   *  กันเลือกซ้ำ: วัตถุดิบที่มีสูตรอื่นผลิตอยู่แล้วจะไม่โผล่ในลิสต์นี้ (1 วัตถุดิบ ผลิตได้จาก 1 สูตรเท่านั้น) */
-  function producesSelect(bind, recipe) {
-    var claimed = {};
-    state.data.recipes.forEach(function (rr) {
-      if (rr.id !== recipe.id && rr.producesIngredientId) claimed[rr.producesIngredientId] = true;
-    });
-    var groups = { raw: [], mid: [] };
-    state.data.ingredients.forEach(function (i) {
-      if (claimed[i.id]) return;
-      groups[matKind(i)].push(i);
-    });
-    var body = '<option value="">— ไม่ผลิตวัตถุดิบ (เป็นสูตรขนม/ผลิตภัณฑ์สำเร็จรูป) —</option>' +
-      ['raw', 'mid'].map(function (kind) {
-        var items = groups[kind];
-        if (!items.length) return '';
-        return '<optgroup label="' + esc(MAT_LABEL[kind]) + '">' + items.map(function (i) {
-          return '<option value="' + i.id + '"' + (i.id === recipe.producesIngredientId ? ' selected' : '') + '>' + esc(i.name) + '</option>';
-        }).join('') + '</optgroup>';
-      }).join('');
     return '<select data-bind="' + bind + '" data-fkey="' + bind + '">' + body + '</select>';
   }
   function categorySelect(bind, value) {
