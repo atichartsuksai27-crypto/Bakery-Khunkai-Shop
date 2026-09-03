@@ -226,7 +226,10 @@ main {
 }
 .stat .sub { font-size: 13px; color: var(--muted); margin-top: 2px; overflow-wrap: break-word; }
 .stat.good .value { color: var(--good); }
-.stat.brand .value { color: var(--brand); }
+/* ตั้งใจใช้ "stat-brand" ไม่ใช่ "brand" เฉย ๆ — เว็บมี .brand ของ header โลโก้อยู่แล้ว
+   (display: flex; align-items: center; ด้านบน) ถ้าใช้ชื่อชนกัน การ์ดสถิติที่ได้ class นี้
+   จะกลายเป็น flex row ไปด้วย ทำให้ label/value/sub เรียงข้างกันแทนที่จะซ้อนกันตามปกติ */
+.stat.stat-brand .value { color: var(--brand); }
 
 /* ---------- table ---------- */
 .table-wrap {

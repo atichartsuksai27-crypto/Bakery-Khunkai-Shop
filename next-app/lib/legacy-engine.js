@@ -476,7 +476,7 @@ export function bootLegacyApp() {
     return '' +
       head('ภาพรวม', 'สรุปต้นทุนและกำไรของทุกสูตรในระบบ') +
       '<div class="grid cols-4">' +
-        stat('จำนวนสูตรขนม', num(recipes.length, 0) + ' <span class="sub">สูตร</span>', '', 'brand') +
+        stat('จำนวนสูตรขนม', num(recipes.length, 0) + ' <span class="sub">สูตร</span>', '', 'stat-brand') +
         stat('วัตถุดิบในคลังราคา', num(state.data.ingredients.length, 0) + ' <span class="sub">รายการ</span>', '') +
         stat('ต้นทุนเฉลี่ยต่อชิ้น', money(avgPerPiece) + ' <span class="sub">บาท</span>', 'รวมค่าบรรจุภัณฑ์และค่าแรงแล้ว') +
         stat('กำไรรวมต่อ 1 รอบผลิต', money(totalProfit) + ' <span class="sub">บาท</span>', 'ถ้าขายหมดทุกสูตร', totalProfit >= 0 ? 'good' : '') +
@@ -634,7 +634,7 @@ export function bootLegacyApp() {
       '</div></div>' +
 
       '<div class="grid cols-3">' +
-        stat('ต้นทุนวัตถุดิบทั้งหมด', money(c.total) + ' <span class="sub">บาท</span>', 'สำหรับ ' + num(target, 0) + ' ชิ้น', 'brand') +
+        stat('ต้นทุนวัตถุดิบทั้งหมด', money(c.total) + ' <span class="sub">บาท</span>', 'สำหรับ ' + num(target, 0) + ' ชิ้น', 'stat-brand') +
         stat('ต้นทุนรวมต่อชิ้น', money(f2.perPiece) + ' <span class="sub">บาท</span>', 'รวมบรรจุภัณฑ์ + ค่าแรง') +
         stat('ยอดขายที่ควรได้', money(f2.sell * target) + ' <span class="sub">บาท</span>', 'ที่ราคา ' + money(f2.sell) + ' บาท/ชิ้น', 'good') +
       '</div>' +
@@ -917,7 +917,7 @@ export function bootLegacyApp() {
     /* ---------- ยอดยกมา + สรุปรอบเดือนนี้ ---------- */
     html += '<div class="grid cols-4">' +
       stat('ยอดยกมา', money(m.opening) + ' <span class="sub">บาท</span>',
-        (isThisMonth ? 'เดือนปัจจุบัน · ' : 'รอบ ') + thMonth(mk), 'brand') +
+        (isThisMonth ? 'เดือนปัจจุบัน · ' : 'รอบ ') + thMonth(mk), 'stat-brand') +
       stat('รายรับเดือนนี้', money(m.totalIncome) + ' <span class="sub">บาท</span>', thMonth(mk)) +
       stat('รายจ่ายเดือนนี้', money(m.totalExpense) + ' <span class="sub">บาท</span>', thMonth(mk)) +
       stat('คงเหลือสิ้นเดือน', money(m.closing) + ' <span class="sub">บาท</span>',
@@ -1009,7 +1009,7 @@ export function bootLegacyApp() {
     html += '<div class="card"><h2>ยอดยกมาของ ' + esc(thMonth(mk)) +
         ' <span class="hint">ปกติระบบคำนวณให้จากเดือนที่แล้วอัตโนมัติ</span></h2>' +
       '<div class="grid cols-2" style="align-items:end">' +
-        f('ยอดยกมา (บาท)', inp('number', 'lmo', m.opening, 'step="0.01"')) +
+        f('ยอดยกมา (บาท)', inp('number', 'lmo', money2(m.opening), 'step="0.01"')) +
         '<div class="actions">' +
           (m.openingIsExplicit
             ? '<button class="btn danger" data-act="ldg-open-reset">ยกเลิกการปิดรอบ (ให้คำนวณอัตโนมัติ)</button>'
