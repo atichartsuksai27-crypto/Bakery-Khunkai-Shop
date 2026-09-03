@@ -408,7 +408,6 @@ export function bootLegacyApp() {
   function ingById(id) {
     return state.data.ingredients.filter(function (i) { return i.id === id; })[0] || null;
   }
-  /** ต้นทุน/หน่วยของวัตถุดิบ "ตั้งต้น" ที่ซื้อเข้ามาตรง ๆ — สูตรคำนวณเดิมของระบบ ไม่แตะต้อง */
   function unitCost(ing) {
     if (!ing || !ing.pack) return 0;
     return ing.price / ing.pack;
@@ -420,132 +419,26 @@ export function bootLegacyApp() {
     return r || list[0];
   }
 
-  /* ============================================================ domain: material graph
-   *
-   * โมเดลธุรกิจ 3 ระดับ ที่ระบบ derive เองทั้งหมดจากความสัมพันธ์การผลิตจริง
-   * (ไม่ดูจากชื่อ ไม่มี field เก็บประเภท และไม่มีช่องให้ผู้ใช้เลือกประเภทเอง):
-   *
-   *   RAW MATERIAL       = แถวใน ingredients[] — มี pack/price คือของที่ "ซื้อเข้ามา" จากภายนอก
-   *   PROCESSED MATERIAL = ผลผลิตของสูตร ที่มีสูตรอื่นเอาไปใช้เป็นวัตถุดิบต่อ
-   *   FINISHED PRODUCT   = ผลผลิตของสูตร ที่ไม่มีสูตรไหนเอาไปใช้ต่อ (ปลายทาง = ขายให้ลูกค้า)
-   *
-   * กุญแจสำคัญ: ระบบเดิม "ไม่มีผลผลิตของสูตร" เป็นตัวตนที่อ้างอิงได้เลย — สูตรมีแค่ basePieces
-   * (ปริมาณ) แต่ไม่มีทางให้สูตรอื่นชี้มาหาผลผลิตนั้นได้ จึงเติมช่องว่างนี้โดยให้ recipe.id ใช้เป็น
-   * material id ได้ เพราะ items[].ingredientId เป็นสตริงเปล่า ๆ ใน JSON ไม่มี foreign key/constraint
-   * บังคับว่าต้องเป็น ing-* เท่านั้น — ผลผลิตของสูตรจึงอ้างอิงได้ทันทีโดยไม่เพิ่ม field ใหม่แม้แต่ตัวเดียว
-   * และข้อมูลเดิม (ingredientId เป็น ing-* ล้วน) ยัง resolve เป็น RAW เหมือนเดิมทุกจุด ผลลัพธ์ไม่เปลี่ยน */
-
-  var MAT = {
-    raw: { key: 'raw', label: 'วัตถุดิบตั้งต้น' },
-    processed: { key: 'processed', label: 'วัตถุดิบที่ผลิตขึ้น' },
-    product: { key: 'product', label: 'สินค้าสำเร็จรูป' }
-  };
-
-  function recipeById(id) {
-    return state.data.recipes.filter(function (r) { return r.id === id; })[0] || null;
-  }
-
-  /** สูตรที่เอา "ผลผลิตของสูตร recipeId" ไปใช้เป็นวัตถุดิบต่อ — ตัวชี้ขาดว่าผลผลิตนั้นเป็นวัตถุดิบหรือสินค้า */
-  function consumersOfRecipe(recipeId) {
-    return state.data.recipes.filter(function (r) {
-      return r.id !== recipeId && (r.items || []).some(function (it) { return it.ingredientId === recipeId; });
-    });
-  }
-
-  /** บทบาทของผลผลิตจากสูตรหนึ่ง — มาจากโครงสร้างกราฟล้วน ๆ ผู้ใช้ไม่ได้เป็นคนกำหนด */
-  function recipeRole(recipe) {
-    if (!recipe) return null;
-    return consumersOfRecipe(recipe.id).length ? MAT.processed : MAT.product;
-  }
-
-  /** resolve material id -> domain object — จุดเดียวของทั้งระบบที่ตัดสินว่าอะไรเป็นอะไร
-   *  ทุกหน้าต้องเรียกผ่านตัวนี้เท่านั้น ห้ามมี logic จำแนกกระจายที่อื่น */
-  function materialById(id) {
-    var ing = ingById(id);
-    if (ing) return { id: ing.id, name: ing.name, unit: ing.unit, kind: MAT.raw, ingredient: ing, recipe: null };
-    var rec = recipeById(id);
-    if (rec) return { id: rec.id, name: rec.name, unit: 'หน่วยผลผลิต', kind: recipeRole(rec), ingredient: null, recipe: rec };
-    return null;
-  }
-
-  /** material ทั้งหมดที่ระบบรู้จัก = ของที่ซื้อเข้ามา + ผลผลิตของทุกสูตร */
-  function listMaterials() {
-    return state.data.ingredients.map(function (i) { return materialById(i.id); })
-      .concat(state.data.recipes.map(function (r) { return materialById(r.id); }));
-  }
-
-  /** ที่มาของ material (trace origin) — RAW คืน null เพราะมาจากการซื้อ ไม่ได้ผลิตจากอะไร */
-  function materialInputs(mat) {
-    if (!mat || !mat.recipe) return null;
-    return (mat.recipe.items || []).map(function (it) {
-      var m = materialById(it.ingredientId);
-      return { qty: it.qty, include: it.include, mat: m, name: m ? m.name : '(ลบไปแล้ว)' };
-    });
-  }
-
-  function kindBadge(kind) {
-    return kind ? '<span class="chip mat-' + kind.key + '">' + kind.label + '</span>' : '';
-  }
-  function matBadge(mat) { return mat ? kindBadge(mat.kind) : ''; }
-
-  /* ---- ต้นทุน: RAW ใช้ราคาซื้อเดิม / PROCESSED ไล่ย้อนจากสูตรที่ผลิตมันจนถึง RAW ---- */
-
-  var matCostCache = {};
-  function clearMaterialCache() { matCostCache = {}; }
-
-  /** ต้นทุนต่อหน่วยของ material ใด ๆ
-   *  PROCESSED: ต้นทุนรวมของสูตรที่ผลิตมัน (×1) ÷ ผลผลิตที่ได้ (basePieces) — ไล่ลึกได้ไม่จำกัดชั้น
-   *  stack กันการอ้างอิงวนกลับ (circular) / cache กันคำนวณซ้ำในกราฟที่ลึกและถูกใช้หลายที่ */
-  function materialUnitCost(id, stack) {
-    var mat = materialById(id);
-    if (!mat) return { value: 0, error: null };
-    if (mat.kind === MAT.raw) return { value: unitCost(mat.ingredient), error: null };
-
-    if (stack.indexOf(id) !== -1) {
-      return { value: 0, error: 'พบการอ้างอิงวนกลับ (circular dependency) ที่ “' + mat.name + '” — ระบบหยุดคำนวณสายนี้เพื่อกันลูปไม่สิ้นสุด' };
-    }
-    if (Object.prototype.hasOwnProperty.call(matCostCache, id)) return matCostCache[id];
-
-    var yieldQty = mat.recipe.basePieces || 0;
-    if (!yieldQty) {
-      return { value: 0, error: 'สูตร “' + mat.recipe.name + '” ยังไม่ได้ระบุผลผลิตที่ได้ จึงคำนวณต้นทุนต่อหน่วยของ “' + mat.name + '” ไม่ได้' };
-    }
-    var sub = costOfInternal(mat.recipe, 1, stack.concat(id));
-    if (sub.error) return { value: 0, error: sub.error }; // ยังคำนวณไม่สำเร็จ -> ไม่ cache ไว้
-    var res = { value: sub.total / yieldQty, error: null };
-    matCostCache[id] = res; // ผลที่สำเร็จไม่ขึ้นกับเส้นทางที่เดินมา cache ได้ปลอดภัย
-    return res;
-  }
-
-  /** แกนคำนวณต้นทุนของสูตร ที่ตัวคูณ mult (1 = สูตรฐาน)
-   *  รองรับหลายชั้น: RAW -> PROCESSED A -> PROCESSED B -> PRODUCT พร้อมกันวนลูปไม่ให้ crash */
-  function costOfInternal(recipe, mult, stack) {
-    var error = null;
-    var lines = (recipe.items || []).map(function (it) {
-      var mat = materialById(it.ingredientId);
-      var r = materialUnitCost(it.ingredientId, stack);
-      if (r.error && !error) error = r.error;
+  /** คำนวณต้นทุนของสูตร ที่ตัวคูณ mult (1 = สูตรฐาน) */
+  function costOf(recipe, mult) {
+    mult = mult || 1;
+    var lines = recipe.items.map(function (it) {
+      var ing = ingById(it.ingredientId);
+      var uc = unitCost(ing);
       var qty = Math.round(it.qty * mult * 10) / 10;
       return {
         item: it,
-        mat: mat,
-        name: mat ? mat.name : '(ลบวัตถุดิบนี้ไปแล้ว)',
-        unit: mat ? mat.unit : '-',
-        unitCost: r.value,
-        costError: r.error || null,
+        ing: ing,
+        name: ing ? ing.name : '(ลบวัตถุดิบนี้ไปแล้ว)',
+        unit: ing ? ing.unit : '-',
+        unitCost: uc,
         qty: qty,
-        cost: it.include ? qty * r.value : 0
+        cost: it.include ? qty * uc : 0
       };
     });
     var total = lines.reduce(function (s, l) { return s + l.cost; }, 0);
     var pieces = Math.round((recipe.basePieces || 0) * mult);
-    return { lines: lines, total: total, pieces: pieces, perPiece: pieces ? total / pieces : 0, error: error };
-  }
-
-  /** คำนวณต้นทุนของสูตร ที่ตัวคูณ mult (1 = สูตรฐาน) */
-  function costOf(recipe, mult) {
-    mult = mult || 1;
-    return costOfInternal(recipe, mult, []);
+    return { lines: lines, total: total, pieces: pieces, perPiece: pieces ? total / pieces : 0 };
   }
 
   /** ต้นทุนเต็ม (วัตถุดิบ + บรรจุภัณฑ์ + ค่าแรง) ต่อ 1 สูตรฐาน */
@@ -616,7 +509,7 @@ export function bootLegacyApp() {
         : '<p class="empty">ยังไม่มีสูตรในระบบ — ไปที่เมนู “สูตรขนม” แล้วกดเพิ่มสูตรใหม่</p>') +
       '</div>' +
 
-      '<div class="card"><h2>วัตถุดิบที่แพงที่สุด (ต่อหน่วย) <span class="hint">เฉพาะวัตถุดิบตั้งต้นที่ซื้อเข้ามาโดยตรง</span></h2><div class="table-wrap"><table>' +
+      '<div class="card"><h2>วัตถุดิบที่แพงที่สุด (ต่อหน่วย)</h2><div class="table-wrap"><table>' +
         '<thead><tr><th>วัตถุดิบ</th><th class="num">ราคาที่ซื้อ</th><th class="num">ขนาดบรรจุ</th><th class="num">ต้นทุน/หน่วย</th></tr></thead><tbody>' +
         state.data.ingredients.slice().sort(function (a, b) { return unitCost(b) - unitCost(a); }).slice(0, 5)
           .map(function (i) {
@@ -644,25 +537,13 @@ export function bootLegacyApp() {
     var c = costOf(r, 1);
     var mults = state.data.multipliers;
 
-    var role = recipeRole(r);
-    var consumers = consumersOfRecipe(r.id);
-    var isComponent = role === MAT.processed;
-    var yieldLabel = isComponent ? 'ผลผลิตที่ได้ต่อสูตรฐาน (หน่วยผลผลิต)' : 'จำนวนชิ้นที่ได้ต่อสูตรฐาน';
-
     /* ข้อมูลหัวสูตร */
     html += '<div class="card"><h2>ข้อมูลสูตร</h2><div class="grid cols-4">' +
       f('ชื่อสูตร', inp('text', 'r.name', r.name)) +
       f('หมวดหมู่', inp('text', 'r.category', r.category || '')) +
       f('ชื่อสูตรฐาน (เช่น ไข่ 6 ฟอง)', inp('text', 'r.baseLabel', r.baseLabel || '')) +
-      f(yieldLabel, inp('number', 'r.basePieces', r.basePieces, 'step="1" min="0"')) +
+      f('จำนวนชิ้นที่ได้ต่อสูตรฐาน', inp('number', 'r.basePieces', r.basePieces, 'step="1" min="0"')) +
       '</div>' +
-      '<div class="note" style="margin-top:12px">ผลผลิตของสูตรนี้ ระบบจัดให้เป็น ' + kindBadge(role) + ' ' +
-        (isComponent
-          ? 'เพราะมีสูตรอื่นเอาไปใช้เป็นวัตถุดิบต่อ: ' +
-            consumers.map(function (x) { return '<strong>' + esc(x.name) + '</strong>'; }).join(', ')
-          : 'เพราะยังไม่มีสูตรไหนเอาผลผลิตของสูตรนี้ไปใช้เป็นวัตถุดิบต่อ (ถือเป็นปลายทางที่ขายให้ลูกค้า)') +
-        '<br><span class="muted" style="font-size:12.5px">ระบบสรุปเองจากความสัมพันธ์การผลิตจริง ไม่มีช่องให้เลือกประเภท — ' +
-        'ถ้าอยากให้ผลผลิตของสูตรนี้เป็นวัตถุดิบ ให้ไปเพิ่มมันเป็นวัตถุดิบในสูตรอื่น แล้วประเภทจะเปลี่ยนเองทันที</span></div>' +
       '<div style="margin-top:12px">' + f('หมายเหตุ', inp('text', 'r.note', r.note || '')) + '</div>' +
       '<div class="actions" style="margin-top:14px">' +
         '<button class="btn danger" data-act="del-recipe" data-id="' + r.id + '">ลบสูตรนี้</button>' +
@@ -671,7 +552,6 @@ export function bootLegacyApp() {
 
     /* ตารางวัตถุดิบ */
     html += '<div class="card"><h2>วัตถุดิบในสูตรฐาน <span class="hint">ติ๊ก “คิดต้นทุน” ออก = ไม่นับเป็นต้นทุน (เช่น วัตถุดิบที่มีอยู่แล้ว)</span></h2>' +
-      (c.error ? '<div class="note" style="margin-bottom:12px;border-left-color:var(--bad)">⚠ ' + esc(c.error) + '</div>' : '') +
       '<div class="table-wrap"><table><thead><tr>' +
         '<th style="min-width:170px">วัตถุดิบ</th><th class="num">ปริมาณ</th><th>หน่วย</th>' +
         '<th class="num">ต้นทุน/หน่วย</th><th style="text-align:center">คิดต้นทุน</th>' +
@@ -679,13 +559,10 @@ export function bootLegacyApp() {
       '</tr></thead><tbody>' +
       c.lines.map(function (l, idx) {
         return '<tr' + (l.item.include ? '' : ' class="row-off"') + '>' +
-          '<td>' + select('i.' + idx, l.item.ingredientId, r.id) +
-            '<div style="margin-top:4px">' + (l.mat ? matBadge(l.mat) : '<span class="mat-warn">ไม่พบวัตถุดิบนี้แล้ว</span>') +
-              (l.costError ? ' <span class="mat-warn" title="' + esc(l.costError) + '">⚠</span>' : '') + '</div>' +
-          '</td>' +
+          '<td>' + select('i.' + idx, l.item.ingredientId) + '</td>' +
           '<td class="num">' + inp('number', 'q.' + idx, l.item.qty, 'step="0.1" min="0" class="cell-num"') + '</td>' +
           '<td class="muted">' + esc(l.unit) + '</td>' +
-          '<td class="num muted">' + (l.costError ? '<span class="mat-warn" title="' + esc(l.costError) + '">คำนวณไม่ได้</span>' : num(l.unitCost, 4)) + '</td>' +
+          '<td class="num muted">' + num(l.unitCost, 4) + '</td>' +
           '<td style="text-align:center"><input type="checkbox" data-bind="c.' + idx + '"' + (l.item.include ? ' checked' : '') + '></td>' +
           '<td class="num"><strong>' + money(l.cost) + '</strong></td>' +
           '<td><button class="btn ghost sm" data-act="del-item" data-idx="' + idx + '" title="ลบแถว">✕</button></td>' +
@@ -1197,37 +1074,6 @@ export function bootLegacyApp() {
     var html = head('คลังราคาวัตถุดิบ', 'แก้ราคาที่นี่ที่เดียว — ต้นทุนทุกสูตรอัปเดตตามทันที',
       '<button class="btn primary" data-act="add-ing">+ เพิ่มวัตถุดิบ</button>');
 
-    /* วัตถุดิบที่ผลิตขึ้นเอง — ไม่ใช่ของที่ซื้อ จึงไม่มีราคาซื้อให้กรอก แสดงอย่างเดียว
-     * ระบบสรุปรายการนี้เองจากกราฟการผลิต: ผลผลิตของสูตรไหนถูกสูตรอื่นใช้ต่อ ตัวนั้นคือวัตถุดิบที่ผลิตขึ้น */
-    var madeMats = state.data.recipes.map(function (r) { return materialById(r.id); })
-      .filter(function (m) { return m.kind === MAT.processed; });
-    if (madeMats.length) {
-      html += '<div class="card"><h2>' + MAT.processed.label +
-        ' <span class="hint">ระบบตรวจพบเองจากความสัมพันธ์การผลิต — ผลิตขึ้นเอง ไม่ได้ซื้อ จึงไม่มีราคาซื้อ</span></h2>' +
-        '<div class="table-wrap"><table><thead><tr>' +
-          '<th style="min-width:150px">วัตถุดิบ</th><th style="min-width:230px">ผลิตจาก (ต้นกำเนิด)</th>' +
-          '<th class="num">ผลผลิตต่อรอบ</th><th class="num">ต้นทุน/หน่วย</th><th style="min-width:150px">ถูกใช้ในสูตร</th>' +
-        '</tr></thead><tbody>' +
-        madeMats.map(function (m) {
-          var uc = materialUnitCost(m.id, []);
-          var inputs = materialInputs(m) || [];
-          return '<tr>' +
-            '<td><strong>' + esc(m.name) + '</strong><div style="margin-top:4px">' + matBadge(m) + '</div></td>' +
-            '<td class="muted">' + (inputs.length
-              ? inputs.map(function (x) { return esc(x.name) + (x.mat && x.mat.kind !== MAT.raw ? ' ↩︎' : ''); }).join(' + ')
-              : '<span class="mat-warn">ยังไม่ได้ใส่วัตถุดิบในสูตรนี้</span>') + '</td>' +
-            '<td class="num">' + num(m.recipe.basePieces || 0, 0) + '</td>' +
-            '<td class="num">' + (uc.error
-              ? '<span class="mat-warn" title="' + esc(uc.error) + '">คำนวณไม่ได้</span>'
-              : '<strong>' + num(uc.value, 4) + '</strong>') + '</td>' +
-            '<td class="muted">' + consumersOfRecipe(m.id).map(function (x) { return esc(x.name); }).join(', ') + '</td>' +
-          '</tr>';
-        }).join('') +
-        '</tbody></table></div>' +
-        '<div class="note" style="margin-top:12px">↩︎ = วัตถุดิบตัวนั้นก็เป็นของที่ผลิตขึ้นเหมือนกัน ระบบไล่ต้นทุนย้อนลงไปจนถึงวัตถุดิบตั้งต้นที่ซื้อมาให้เองทุกชั้น</div>' +
-        '</div>';
-    }
-
     // แถบหมวดหมู่ + จำนวนวัตถุดิบต่อหมวด
     var counts = { all: list.length };
     CATEGORIES.forEach(function (c) { counts[c.id] = 0; });
@@ -1323,22 +1169,17 @@ export function bootLegacyApp() {
     return '<input type="' + type + '" data-bind="' + bind + '" data-fkey="' + bind + '" value="' +
       esc(value) + '" ' + (extra || '') + '>';
   }
-  /** dropdown เลือกวัตถุดิบในสูตร — เลือกได้ทั้งของที่ซื้อเข้ามา และผลผลิตของสูตรอื่น
-   *  เลือกผลผลิตของสูตรอื่น = ประกาศความสัมพันธ์การผลิต ระบบจะจัดผลผลิตนั้นเป็น "วัตถุดิบที่ผลิตขึ้น" ให้เองทันที
-   *  ค่าที่บันทึกคือ id เดิมของระบบเสมอ (ing-* หรือ rcp-*) ไม่มีการสร้าง record ใหม่หรือ duplicate ใด ๆ
-   *  selfRecipeId = สูตรที่กำลังแก้อยู่ ตัดออกจากลิสต์กันเลือกผลผลิตตัวเองมาเป็นวัตถุดิบตัวเอง */
-  function select(bind, value, selfRecipeId) {
-    var raws = state.data.ingredients.map(function (i) { return materialById(i.id); });
-    var made = state.data.recipes
-      .filter(function (r) { return r.id !== selfRecipeId; })
-      .map(function (r) { return materialById(r.id); });
-    var body = [
-      { label: MAT.raw.label, items: raws },
-      { label: MAT.processed.label, items: made }
-    ].map(function (g) {
-      if (!g.items.length) return '';
-      return '<optgroup label="' + esc(g.label) + '">' + g.items.map(function (m) {
-        return '<option value="' + m.id + '"' + (m.id === value ? ' selected' : '') + '>' + esc(m.name) + '</option>';
+  function select(bind, value) {
+    var groups = {};
+    state.data.ingredients.forEach(function (i) {
+      var cat = catOf(i);
+      (groups[cat] = groups[cat] || []).push(i);
+    });
+    var body = CATEGORIES.map(function (c) {
+      var items = groups[c.id];
+      if (!items || !items.length) return '';
+      return '<optgroup label="' + esc(c.label) + '">' + items.map(function (i) {
+        return '<option value="' + i.id + '"' + (i.id === value ? ' selected' : '') + '>' + esc(i.name) + '</option>';
       }).join('') + '</optgroup>';
     }).join('');
     return '<select data-bind="' + bind + '" data-fkey="' + bind + '">' + body + '</select>';
@@ -1361,7 +1202,6 @@ export function bootLegacyApp() {
     var pos = null;
     try { pos = active ? active.selectionStart : null; } catch (e) { /* number input */ }
 
-    clearMaterialCache(); // ข้อมูลอาจเพิ่งถูกแก้ ต้องคิดต้นทุนวัตถุดิบที่ผลิตขึ้นใหม่ทุกครั้งที่วาดจอ
     app.innerHTML = (V[state.view] || V.dashboard)();
 
     Array.prototype.forEach.call(document.querySelectorAll('#nav .tab'), function (b) {
@@ -1466,25 +1306,14 @@ export function bootLegacyApp() {
       save('ทำสำเนาแล้ว'); render();
 
     } else if (act === 'del-recipe' && r) {
-      // ผลผลิตของสูตรนี้อาจถูกสูตรอื่นใช้เป็นวัตถุดิบอยู่ — ลบทิ้งเฉย ๆ จะทำให้สูตรนั้นคิดต้นทุนไม่ได้
-      var users = consumersOfRecipe(r.id);
-      if (users.length) {
-        alert('ลบไม่ได้ เพราะผลผลิตของสูตร “' + r.name + '” ถูกใช้เป็นวัตถุดิบอยู่ในสูตร: ' +
-          users.map(function (x) { return x.name; }).join(', ') +
-          '\n\nให้เอาออกจากสูตรเหล่านั้นก่อน แล้วค่อยลบ');
-        return;
-      }
       if (!confirm('ลบสูตร “' + r.name + '” ?')) return;
       state.data.recipes = state.data.recipes.filter(function (x) { return x.id !== r.id; });
       state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;
       save('ลบสูตรแล้ว'); render();
 
     } else if (act === 'add-item' && r) {
-      // ตั้งต้นด้วยของที่ซื้อมาก่อนถ้ามี ไม่มีก็ใช้ผลผลิตของสูตรอื่นเป็นตัวเลือกแรกแทน
-      var firstMat = state.data.ingredients[0] ||
-        state.data.recipes.filter(function (x) { return x.id !== r.id; })[0];
-      if (!firstMat) return toast('ยังไม่มีวัตถุดิบในคลัง');
-      r.items.push({ ingredientId: firstMat.id, qty: 0, include: true });
+      if (!state.data.ingredients.length) return toast('ยังไม่มีวัตถุดิบในคลัง');
+      r.items.push({ ingredientId: state.data.ingredients[0].id, qty: 0, include: true });
       save(); render();
 
     } else if (act === 'del-item' && r) {
@@ -1511,19 +1340,9 @@ export function bootLegacyApp() {
       exportProdCsv(r);
 
     } else if (act === 'export-all-csv') {
-      // ส่งออก material ทุกตัวที่ระบบรู้จัก ทั้งของที่ซื้อมาและของที่ผลิตขึ้นเอง พร้อมประเภทที่ระบบสรุปให้
-      var rows = [['ชื่อวัตถุดิบ', 'ประเภท', 'หน่วย', 'ขนาดบรรจุ', 'ราคาที่ซื้อ', 'ต้นทุนต่อหน่วย', 'ผลิตจาก', 'หมายเหตุ']];
-      listMaterials().forEach(function (m) {
-        if (m.kind === MAT.product) return; // สินค้าสำเร็จรูป ไม่ใช่วัตถุดิบ
-        var ing = m.ingredient;
-        var uc = materialUnitCost(m.id, []);
-        var inputs = (materialInputs(m) || []).map(function (x) { return x.name; }).join(' + ');
-        rows.push([
-          m.name, m.kind.label, m.unit,
-          ing ? ing.pack : '', ing ? ing.price : '',
-          uc.error ? 'คำนวณไม่ได้' : uc.value.toFixed(4),
-          inputs, ing ? (ing.note || '') : ''
-        ]);
+      var rows = [['ชื่อวัตถุดิบ', 'หน่วย', 'ขนาดบรรจุ', 'ราคาที่ซื้อ', 'ต้นทุนต่อหน่วย', 'หมายเหตุ']];
+      state.data.ingredients.forEach(function (i) {
+        rows.push([i.name, i.unit, i.pack, i.price, unitCost(i).toFixed(4), i.note || '']);
       });
       download('วัตถุดิบ.csv', csv(rows), 'text/csv;charset=utf-8');
 

@@ -354,12 +354,6 @@ input[type=checkbox] {
 }
 .chip.on { background: var(--good-soft); color: var(--good); }
 .chip.off { background: var(--warn-soft); color: var(--warn-line); }
-/* 3 ระดับของโมเดลธุรกิจ: ซื้อเข้ามา / ผลิตขึ้นเองเพื่อใช้ต่อ / สินค้าปลายทางที่ขาย
-   ระบบสรุปให้เองจากกราฟการผลิต — ดู legacy-engine.js: materialById() */
-.chip.mat-raw { background: var(--surface-2); color: var(--muted); }
-.chip.mat-processed { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
-.chip.mat-product { background: var(--good-soft); color: var(--good); font-weight: 600; }
-.mat-warn { color: var(--bad); cursor: help; font-weight: 600; }
 
 .pill-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .pill {
