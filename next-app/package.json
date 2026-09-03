@@ -2,18 +2,15 @@
   "name": "bakery-khunkai-next",
   "private": true,
   "version": "2.0.0",
-  "description": "ระบบสูตรและต้นทุนขนม Bakery Khunkai — Next.js (App Router) + Cloudflare Pages + D1",
+  "description": "ระบบสูตรและต้นทุนขนม Bakery Khunkai — Next.js (App Router) บน Vercel, ข้อมูลอยู่ที่ Cloudflare D1 (เข้าถึงผ่าน HTTP API)",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "pages:build": "npx @cloudflare/next-on-pages",
-    "preview": "npm run pages:build && wrangler pages dev .vercel/output/static --compatibility-flag=nodejs_compat --d1=DB",
-    "deploy": "npm run pages:build && wrangler pages deploy .vercel/output/static --project-name=bakery-khunkai-shop",
+    "deploy": "vercel deploy --prod",
     "db:migrate": "wrangler d1 execute bakery-khunkai-db --remote --file=migrations/0001_init.sql && wrangler d1 execute bakery-khunkai-db --remote --file=migrations/0002_add_version.sql && wrangler d1 execute bakery-khunkai-db --remote --file=migrations/0003_add_conflict_log.sql",
-    "db:migrate:local": "wrangler d1 execute bakery-khunkai-db --local --file=migrations/0001_init.sql && wrangler d1 execute bakery-khunkai-db --local --file=migrations/0002_add_version.sql && wrangler d1 execute bakery-khunkai-db --local --file=migrations/0003_add_conflict_log.sql",
-    "cf-typegen": "wrangler types --env-interface CloudflareEnv env.d.ts"
+    "db:migrate:local": "wrangler d1 execute bakery-khunkai-db --local --file=migrations/0001_init.sql && wrangler d1 execute bakery-khunkai-db --local --file=migrations/0002_add_version.sql && wrangler d1 execute bakery-khunkai-db --local --file=migrations/0003_add_conflict_log.sql"
   },
   "dependencies": {
     "next": "^15.1.0",
@@ -21,8 +18,6 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@cloudflare/next-on-pages": "^1.13.7",
-    "@cloudflare/workers-types": "^4.20241218.0",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

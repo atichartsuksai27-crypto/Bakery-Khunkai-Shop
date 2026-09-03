@@ -14,17 +14,12 @@
  * ตอนที่ client ยังไม่เคย sync กับเซิร์ฟเวอร์เลยสักครั้ง (fallback เป็น seed data) จะเผลออ่านเจอ
  * SEED.version=1 แล้วเข้าใจผิดว่าเป็น D1 version จริง ทำให้ PUT ทับข้อมูลโดยไม่เช็คของจริงเลย
  */
-import { getDB, json } from '@/lib/cloudflare';
+import { getD1, D1HttpDatabase } from '@/lib/d1-http';
+import { json } from '@/lib/http';
 import { SEED, DEFAULT_LEDGER } from '@/lib/seed';
 import type { AppState, AppStateRow, Ledger } from '@/lib/types';
 
-// --- สองบรรทัดนี้ห้ามลบ ---
-// 'edge'          : @cloudflare/next-on-pages รองรับเฉพาะ Edge Runtime เท่านั้น
-//                   ถ้าไม่ประกาศ Next จะ build เป็น Node.js serverless function แล้ว next-on-pages
-//                   จะ fail ตอน build ด้วย error ว่ามี route ที่ไม่ใช่ edge
-// 'force-dynamic' : กัน Next ไป prerender route นี้เป็น static ตอน build ซึ่งจะทำให้
-//                   getRequestContext() (ที่ต้องมี request จริง) throw ตอน build
-export const runtime = 'edge';
+// กัน Next ไป prerender route นี้เป็น static ตอน build — ข้อมูลนี้ต้องสดเสมอ ห้าม cache
 export const dynamic = 'force-dynamic';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024; // กันไฟล์ผิดปกติขนาดใหญ่เกินไป
@@ -38,7 +33,7 @@ function normalizeLedger(ledger: unknown): Ledger {
   };
 }
 
-async function readRow(db: D1Database): Promise<AppStateRow | null> {
+async function readRow(db: D1HttpDatabase): Promise<AppStateRow | null> {
   return db
     .prepare('SELECT data, updated_at, version FROM app_state WHERE id = 1')
     .first<AppStateRow>();
@@ -51,7 +46,7 @@ function rowToPayload(row: AppStateRow): AppState {
   return data;
 }
 
-async function seedIfEmpty(db: D1Database): Promise<AppStateRow | null> {
+async function seedIfEmpty(db: D1HttpDatabase): Promise<AppStateRow | null> {
   const now = new Date().toISOString();
   const payload = JSON.stringify({
     ingredients: SEED.ingredients,
@@ -70,8 +65,13 @@ async function seedIfEmpty(db: D1Database): Promise<AppStateRow | null> {
 }
 
 export async function GET() {
-  const db = getDB();
-  if (!db) return json({ error: 'ยังไม่ได้ผูกฐานข้อมูล D1 (binding "DB") กับโปรเจกต์นี้' }, 500);
+  const db = getD1();
+  if (!db) {
+    return json(
+      { error: 'ยังไม่ได้ตั้งค่าตัวแปรแวดล้อมสำหรับต่อ D1 (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_D1_DATABASE_ID / CLOUDFLARE_API_TOKEN)' },
+      500
+    );
+  }
 
   let row = await readRow(db);
   if (!row) row = await seedIfEmpty(db);
@@ -81,8 +81,13 @@ export async function GET() {
 }
 
 export async function PUT(request: Request) {
-  const db = getDB();
-  if (!db) return json({ error: 'ยังไม่ได้ผูกฐานข้อมูล D1 (binding "DB") กับโปรเจกต์นี้' }, 500);
+  const db = getD1();
+  if (!db) {
+    return json(
+      { error: 'ยังไม่ได้ตั้งค่าตัวแปรแวดล้อมสำหรับต่อ D1 (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_D1_DATABASE_ID / CLOUDFLARE_API_TOKEN)' },
+      500
+    );
+  }
 
   const len = Number(request.headers.get('content-length') || 0);
   if (len && len > MAX_BODY_BYTES) return json({ error: 'ข้อมูลใหญ่เกินไป' }, 413);

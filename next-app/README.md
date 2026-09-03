@@ -1,9 +1,13 @@
-# Bakery Khunkai — Next.js (App Router) บน Cloudflare
+# Bakery Khunkai — Next.js (App Router) บน Vercel
 
-ย้ายเว็บเดิม (static HTML + Cloudflare Pages Functions) มารวมเป็นโปรเจกต์ Next.js เดียว
-ยังใช้ฐานข้อมูล D1 ตัวเดิม (`bakery-khunkai-db`) และ endpoint เดิม `/api/state` — ข้อมูลไม่ต้องย้าย
+hosting อยู่บน **Vercel** (Node.js runtime ปกติ) ส่วนข้อมูลยังอยู่ที่ **Cloudflare D1** ตัวเดิม
+(`bakery-khunkai-db`) — ไม่ได้ย้ายข้อมูลไปไหน แค่ย้าย "ที่รันเว็บ" เท่านั้น
 
-## แผนที่ไฟล์ เก่า → ใหม่
+> โปรเจกต์นี้เคยรันบน Cloudflare Pages มาก่อน (ดูประวัติใน git log ถ้าอยากเทียบ) ตอนนั้นต่อ D1
+> ผ่าน binding ตรง ๆ ซึ่งเป็นความสามารถเฉพาะของ Cloudflare Workers เท่านั้น ใช้บน Vercel ไม่ได้
+> จึงเปลี่ยนมาต่อผ่าน **D1 HTTP API** แทน (ดูหัวข้อด้านล่าง) — เป็นการเปลี่ยนแปลงหลักของรอบนี้
+
+## แผนที่ไฟล์ เก่า (เว็บ static เดิม) → ใหม่
 
 | ของเดิม | ที่อยู่ใหม่ | หมายเหตุ |
 |---|---|---|
@@ -13,7 +17,7 @@
 | `assets/js/data.js` | `lib/legacy-seed.js` | `window.SEED_DATA` → `export const SEED_DATA` |
 | `functions/api/state.js` | `app/api/state/route.ts` | เป็น Route Handler + TypeScript |
 | `seed.json` | `lib/seed.json` | import ตรง ๆ ตอน build |
-| `migrations/*.sql` | `migrations/*.sql` | เหมือนเดิม |
+| `migrations/*.sql` | `migrations/*.sql` | เหมือนเดิม — รันผ่าน wrangler CLI เป็นงาน admin เท่านั้น |
 | `assets/img/logo-mark.png` | `public/img/logo-mark.png` | |
 | `server.js` | ไม่ต้องมีแล้ว | ใช้ `npm run dev` แทน |
 
@@ -30,139 +34,88 @@
 
 ---
 
-## Backend: Pages Functions → Route Handlers
+## Backend: Route Handler เดิม (logic ไม่เปลี่ยนเลยสักบรรทัด)
 
-สิ่งที่เปลี่ยนจริง ๆ มี 4 อย่าง (logic ธุรกิจไม่เปลี่ยนเลยสักบรรทัด)
+`app/api/state/route.ts` ยังเป็น `GET` / `PUT` / `OPTIONS` เหมือนตอนอยู่บน Cloudflare
+optimistic concurrency control + `state_conflict_log` ทำงานเหมือนเดิมทุกจุด
+สิ่งเดียวที่เปลี่ยนคือ **ชั้นต่อฐานข้อมูล** (ดูหัวข้อถัดไป)
 
-**1. ชื่อฟังก์ชันที่ export**
+## ต่อ D1 จากนอก Cloudflare — D1 HTTP API
 
-```js
-// เดิม — functions/api/state.js
-export async function onRequestGet(ctx) { ... }
-export async function onRequestPut(ctx) { ... }
-export async function onRequestOptions() { ... }
-```
+Cloudflare D1 ไม่มี binding ให้ใช้นอก Workers runtime แต่มี **REST API** ให้ยิงข้าม network ได้
+(`POST /accounts/:account_id/d1/database/:database_id/query`) ต้องใช้ API token ที่มีสิทธิ์
+**Account → D1 → Edit**
+
+`lib/d1-http.ts` เป็นตัวห่อ fetch เรียก endpoint นี้ ทำ interface เลียนแบบ subset ของ
+`D1Database` เดิม (`prepare(sql).bind(...args).first()` / `.run()`) เพื่อให้ `route.ts`
+ที่ port มาจาก Cloudflare แทบไม่ต้องแก้ logic เลย แก้แค่ import
+
 ```ts
-// ใหม่ — app/api/state/route.ts
-export async function GET() { ... }
-export async function PUT(request: Request) { ... }
-export async function OPTIONS() { ... }
-```
-
-**2. การเข้าถึง D1 binding** — จุดที่ต่างมากที่สุด
-
-Pages Functions ส่ง binding มาให้ทาง argument แต่ Route Handler ไม่มี `ctx` ให้
-ต้องดึงจาก async context ของ request แทน
-
-```js
-// เดิม
-const db = ctx.env.DB;
-```
-```ts
-// ใหม่ — lib/cloudflare.ts
+// เดิม (Cloudflare binding)
 import { getRequestContext } from '@cloudflare/next-on-pages';
 const db = getRequestContext().env.DB;
+
+// ใหม่ (D1 HTTP API)
+import { getD1 } from '@/lib/d1-http';
+const db = getD1(); // อ่านค่าจาก env var 3 ตัว ดูหัวข้อ "ตัวแปรแวดล้อม" ด้านล่าง
 ```
 
-> `getRequestContext()` ใช้ได้เฉพาะ **ตอนมี request จริงอยู่** และ **บน Edge Runtime** เท่านั้น
-> เรียกตอน build, ที่ module top-level, หรือในหน้าที่ถูก prerender เป็น static → throw ทันที
+ผลพลอยได้: ตัด dependency กับ Cloudflare Edge Runtime ออกไปทั้งหมด — ไม่ต้องมี
+`export const runtime = 'edge'`, ไม่ต้องกังวลเรื่อง `fs`/`Buffer`/`node:*` ที่ใช้ไม่ได้บน edge อีกต่อไป
+เพราะ Vercel รัน route นี้บน **Node.js runtime ปกติ** (ค่าเริ่มต้นของ Next.js)
 
-**3. ต้องประกาศ runtime กำกับทุก route**
+ยังคง `export const dynamic = 'force-dynamic'` ไว้ — กัน Next prerender endpoint นี้เป็น static
+ตอน build (ข้อมูลร้านต้องอ่านสดทุกครั้ง ไม่ใช่ cache ตอน build)
 
-```ts
-export const runtime = 'edge';          // next-on-pages รองรับแค่ edge
-export const dynamic = 'force-dynamic'; // กัน Next prerender route นี้ตอน build
-```
+### ข้อแลกเปลี่ยนที่ควรรู้
 
-ถ้าลืม `runtime = 'edge'` → build จะ fail (`next-on-pages` ไม่ยอมให้มี Node.js serverless function)
-ถ้าลืม `force-dynamic` → `getRequestContext()` จะ throw ตอน build เพราะยังไม่มี request
-
-**4. อ่าน request/response ตาม Web API มาตรฐาน** — อันนี้ของเดิมทำถูกอยู่แล้ว
-(`request.json()`, `request.headers.get()`, `new Response(...)`) ก็อปมาใช้ได้เลยไม่ต้องแก้
+D1 HTTP API มี latency สูงกว่า binding ตรง ๆ พอสมควร (เป็น request ข้ามเครือข่ายไปหา Cloudflare
+แทนที่จะเป็น binding ในตัว isolate เดียวกัน) — สำหรับเว็บภายในร้านขนาดนี้ (query เดียว อ่าน/เขียน
+JSON ก้อนเดียว) ไม่กระทบการใช้งานจริง แต่ถ้าต้องการ query ถี่ ๆ จำนวนมากในอนาคต ควรพิจารณา
+ย้ายฐานข้อมูลมาอยู่ database ที่ Vercel เข้าถึงได้เร็วกว่า (Vercel Postgres, Turso ฯลฯ) แทน
 
 ---
 
-## ปรับโค้ดให้รองรับ Cloudflare Edge Runtime
+## ตัวแปรแวดล้อมที่ต้องตั้งบน Vercel
 
-Edge Runtime ไม่ใช่ Node.js — มันคือ V8 isolate ที่มีแค่ Web API มาตรฐาน
-ไลบรารีที่แตะ Node built-in จะพังตอน runtime บน production ทั้งที่ `next dev` บนเครื่องผ่านสบาย
+ไปที่ **Vercel Project → Settings → Environment Variables** ใส่ 3 ตัวนี้
+(เลือกทั้ง Production, Preview, Development)
 
-### ที่ใช้ไม่ได้ และใช้อะไรแทน
+| ชื่อ | ค่า | หามาจากไหน |
+|---|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | Account ID ของบัญชี Cloudflare | เห็นในหน้า `wrangler whoami` หรือ dashboard ด้านขวา |
+| `CLOUDFLARE_D1_DATABASE_ID` | `d30092a6-7a97-4346-93c8-d918e10a6992` | ค่าเดียวกับใน `wrangler.toml` |
+| `CLOUDFLARE_API_TOKEN` | API token ที่มีสิทธิ์ **Account → D1 → Edit** | สร้างที่ dash.cloudflare.com/profile/api-tokens |
 
-| ใช้ไม่ได้บน Edge | ใช้แทนด้วย |
-|---|---|
-| `fs`, `path` (อ่านไฟล์ตอน runtime) | `import data from './x.json'` ให้ webpack ฝังตอน build |
-| `crypto` ของ Node (`createHmac`, `randomBytes`) | Web Crypto: `crypto.subtle`, `crypto.randomUUID()` |
-| `Buffer` | `TextEncoder` / `TextDecoder` / `atob` / `btoa` / `Uint8Array` |
-| `process.env` แบบอ่านตอน runtime | `getRequestContext().env` (binding & secret ของ Cloudflare) |
-| `net`, `tls`, `dns`, `child_process` | ไม่มีทางแทน — ต้องเปลี่ยนไลบรารี |
-| `sharp` (next/image optimizer) | `images: { unoptimized: true }` แล้วใช้ `<img>` |
-| ORM ที่ต่อ TCP (Prisma แบบปกติ, `pg`, `mysql2`) | D1 binding ตรง ๆ, หรือ Drizzle ORM (รองรับ D1), หรือ Prisma + Accelerate |
-| `setTimeout` ยาว ๆ / งานเบื้องหลังหลังตอบ response | `ctx.waitUntil()` |
-| ISR / on-demand revalidation | ไม่รองรับบน next-on-pages — ใช้ `force-dynamic` + Cache API |
-
-### สิ่งที่ทำไว้แล้วในโปรเจกต์นี้
-
-- `compatibility_flags = ["nodejs_compat"]` ใน `wrangler.toml` — **จำเป็น** ไม่งั้น Next จะ error
-  ว่า `Cannot resolve node:...` ตอน runtime (build ผ่านแต่เว็บพัง)
-- `next.config.mjs` ตั้ง `resolve.fallback` ปิด `fs`/`net`/`tls` เฉพาะ edge bundle
-  → ถ้าเผลอ import อะไรที่ต้องใช้ Node API จะ **พังตอน build** แทนที่จะไปพังตอน production
-- `images: { unoptimized: true }` — optimizer ในตัวของ Next ต้องพึ่ง `sharp` ซึ่งรันบน Cloudflare ไม่ได้
-- `seed.json` import ตรง ๆ ไม่ได้อ่านด้วย `fs` ตอน runtime
-- `lib/legacy-engine.js` ถูก **dynamic import ใน `useEffect`** เท่านั้น เพราะมันแตะ `document`
-  ตั้งแต่บรรทัดแรก ถ้า import แบบ static ไว้บนหัวไฟล์ Next จะ evaluate ตอน SSR แล้วพังตอน build
-
-### เช็คก่อน deploy ทุกครั้ง
-
-```bash
-npm run pages:build   # ถ้ามี Node API ที่ใช้ไม่ได้ จะ fail ตรงนี้ ไม่ใช่ตอนขึ้น production
-```
-
-`next build` ผ่านไม่ได้แปลว่ารันบน Cloudflare ได้ — ต้องผ่าน `pages:build` ด้วยเสมอ
+ทดสอบ local ได้โดยสร้างไฟล์ `.env.local` (ถูก `.gitignore` กันไว้แล้ว ไม่มีวันหลุดขึ้น git) ใส่ 3 ตัวแปรนี้
+แล้ว `npm run dev` หรือ `npm run build && npm run start` ได้ตามปกติ
 
 ---
 
 ## คำสั่งที่ใช้
 
 ```bash
-npm install                 # ต้องมี .npmrc (legacy-peer-deps) ติดมาด้วย
-npm run db:migrate:local    # สร้างตารางใน D1 ตัว local
-npm run dev                 # http://localhost:3000 — มี D1 local ให้ใช้ผ่าน setupDevPlatform()
-npm run pages:build         # build สำหรับ Cloudflare (ตรวจ Edge compat)
-npm run preview             # รันของจริงที่ build แล้วบน workerd + D1 local
-npm run deploy              # ขึ้น Cloudflare Pages (ต้องมี CLOUDFLARE_API_TOKEN)
+npm install                 # ไม่มีปัญหา peer-deps แล้ว (ตัด @cloudflare/next-on-pages ออกไปแล้ว)
+npm run dev                  # http://localhost:3000 — ต้องมี .env.local ก่อน ไม่งั้น /api/state จะตอบ 500
+npm run build                # next build ปกติ ไม่มีขั้นตอนพิเศษของ Cloudflare อีกแล้ว
+npm run deploy                # vercel deploy --prod (ต้อง `vercel login` หรือมี VERCEL_TOKEN ก่อน)
+
+# คำสั่งจัดการฐานข้อมูล (admin เท่านั้น ไม่เกี่ยวกับ deploy เว็บ)
+npm run db:migrate           # รัน migration บน D1 จริงผ่าน wrangler (ต้องมี CLOUDFLARE_API_TOKEN)
+npm run db:migrate:local     # รัน migration บน D1 จำลอง local (ไว้ทดสอบ)
 ```
 
-## ต้องเปลี่ยนตั้งค่าใน Cloudflare Pages dashboard ก่อนใช้จริง
+## Deploy ครั้งแรก
 
-โปรเจกต์ Pages ปัจจุบันตั้งเป็นเว็บ static (ไม่มี build command, output = `.`)
-ถ้าจะใช้ตัวนี้ต้องไปแก้ที่ **Settings → Builds & deployments**
+```bash
+cd next-app
+npx vercel link      # ผูกโฟลเดอร์นี้กับโปรเจกต์ Vercel (สร้างใหม่หรือเลือกโปรเจกต์เดิม)
+npx vercel env add CLOUDFLARE_ACCOUNT_ID production
+npx vercel env add CLOUDFLARE_D1_DATABASE_ID production
+npx vercel env add CLOUDFLARE_API_TOKEN production
+# ทำซ้ำอีกรอบสำหรับ preview/development ถ้าต้องการทดสอบบน preview URL ด้วย
+npx vercel deploy --prod
+```
 
-| ช่อง | ค่าที่ต้องใส่ |
-|---|---|
-| Root directory | `next-app` |
-| Build command | `npm run pages:build` |
-| Build output directory | `.vercel/output/static` |
-| Compatibility flags | `nodejs_compat` (ทั้ง Production และ Preview) |
-| D1 binding | `DB` → `bakery-khunkai-db` (ทั้ง Production และ Preview) |
-
-> ⚠️ Compatibility flag กับ D1 binding ต้องตั้ง **แยกกันทั้งสองสภาพแวดล้อม**
-> ตั้งแค่ Production แล้ว preview deployment จะพังโดยไม่มีสาเหตุที่ชัดเจน
-
-## หมายเหตุเรื่อง adapter
-
-`@cloudflare/next-on-pages` ถูก Cloudflare ประกาศ deprecated แล้ว (ยังใช้ได้ปกติ แต่หยุดพัฒนา)
-ของใหม่คือ **`@opennextjs/cloudflare`** ซึ่ง deploy ขึ้น Workers และรันบน **Node.js runtime**
-จึงไม่ติดข้อจำกัด Edge ทั้งตารางข้างบน (ใช้ `fs`, `Buffer`, ORM ปกติได้)
-
-ถ้าจะย้ายไป OpenNext แก้แค่ 3 จุด:
-
-1. `npm i -D @opennextjs/cloudflare` แล้วลบ `@cloudflare/next-on-pages`
-2. `lib/cloudflare.ts` เปลี่ยน import
-   ```ts
-   import { getCloudflareContext } from '@opennextjs/cloudflare';
-   const db = (await getCloudflareContext({ async: true })).env.DB;
-   ```
-3. ลบ `export const runtime = 'edge'` ออกจาก `app/api/state/route.ts` (ไม่ต้องใช้แล้ว)
-
-โปรเจกต์นี้เลือก next-on-pages ไว้ก่อนเพราะยังอยู่บน Pages เดิมและ D1 binding เดิมใช้ต่อได้ทันที
+ถ้าต้องการให้ push เข้า GitHub แล้ว deploy อัตโนมัติ (เหมือนที่เคยตั้งไว้บน Cloudflare Pages)
+ให้เชื่อม Git ที่ **Vercel Project → Settings → Git** แทน — Root Directory ตั้งเป็น `next-app`

@@ -1,14 +1,8 @@
-# Bakery Khunkai — Next.js บน Cloudflare Pages (@cloudflare/next-on-pages)
+# Bakery Khunkai — ใช้ไฟล์นี้เฉพาะสำหรับคำสั่ง `wrangler d1 execute` (รัน migration ผ่าน CLI)
+# เท่านั้น ไม่เกี่ยวกับการ deploy อีกต่อไป (แอปรันบน Vercel แล้ว ไม่ใช่ Cloudflare Pages)
+# wrangler ใช้ database_name ในนี้เพื่อเดา database_id ให้เวลารันคำสั่ง db:migrate / db:migrate:local
 name = "bakerykhunkai-management"
 compatibility_date = "2025-01-01"
-
-# จำเป็นสำหรับ Next.js บน Cloudflare: runtime ของ Workers ไม่มี Node built-in ให้โดยกำเนิด
-# flag นี้เปิด polyfill ชุด nodejs_compat (Buffer, node:crypto, node:stream ฯลฯ) ให้ใช้ได้เท่าที่ Cloudflare รองรับ
-# ถ้าไม่เปิด build จะผ่านแต่ไปพังตอน runtime ด้วย error "Cannot resolve node:..."
-compatibility_flags = ["nodejs_compat"]
-
-# ผลลัพธ์ของ `npx @cloudflare/next-on-pages` — ไม่ใช่ .next
-pages_build_output_dir = ".vercel/output/static"
 
 [[d1_databases]]
 binding = "DB"
