@@ -1,5 +1,5 @@
 # Bakery Khunkai — Next.js บน Cloudflare Pages (@cloudflare/next-on-pages)
-name = "bakery-khunkai-shop"
+name = "bakerykhunkai-management"
 compatibility_date = "2025-01-01"
 
 # จำเป็นสำหรับ Next.js บน Cloudflare: runtime ของ Workers ไม่มี Node built-in ให้โดยกำเนิด
