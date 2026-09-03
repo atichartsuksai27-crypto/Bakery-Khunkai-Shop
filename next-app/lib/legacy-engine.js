@@ -408,6 +408,7 @@ export function bootLegacyApp() {
   function ingById(id) {
     return state.data.ingredients.filter(function (i) { return i.id === id; })[0] || null;
   }
+  /** ต้นทุน/หน่วยของวัตถุดิบ "ตั้งต้น" ที่ซื้อเข้ามาตรง ๆ — สูตรคำนวณเดิมของระบบ ไม่แตะต้อง */
   function unitCost(ing) {
     if (!ing || !ing.pack) return 0;
     return ing.price / ing.pack;
@@ -419,26 +420,70 @@ export function bootLegacyApp() {
     return r || list[0];
   }
 
-  /** คำนวณต้นทุนของสูตร ที่ตัวคูณ mult (1 = สูตรฐาน) */
-  function costOf(recipe, mult) {
-    mult = mult || 1;
+  /* ---- จำแนกวัตถุดิบตั้งต้น / กึ่งสำเร็จรูป — derive จากข้อมูลเดิมล้วน ๆ ไม่มีการเก็บ "ประเภท" ไว้ตรง ๆ ที่ไหน
+   * Intermediate = มีสูตร (recipe) ที่ตั้งค่า producesIngredientId ชี้มาที่วัตถุดิบนี้
+   * Raw          = ไม่มีสูตรไหนผลิตมันเลย (พฤติกรรมของวัตถุดิบทุกตัวก่อนมี feature นี้ ยังคงเป็นแบบนี้ต่อไป) */
+  function producerRecipeOf(ingredientId) {
+    return state.data.recipes.filter(function (r) { return r.producesIngredientId === ingredientId; })[0] || null;
+  }
+  function isIntermediate(ing) {
+    return !!(ing && producerRecipeOf(ing.id));
+  }
+  var MAT_LABEL = { raw: 'วัตถุดิบตั้งต้น', mid: 'วัตถุดิบกึ่งสำเร็จรูป' };
+  function matKind(ing) { return isIntermediate(ing) ? 'mid' : 'raw'; }
+  function matBadge(ing) {
+    var kind = matKind(ing);
+    return '<span class="chip mat-' + kind + '">' + MAT_LABEL[kind] + '</span>';
+  }
+
+  /** ต้นทุน/หน่วยที่แท้จริงของวัตถุดิบตัวหนึ่ง ไม่ว่าจะเป็นตั้งต้นหรือกึ่งสำเร็จรูป (ไล่ย้อนแบบ recursive)
+   *  ถ้าเป็นกึ่งสำเร็จรูป: ต้นทุน/หน่วย = ต้นทุนรวมของสูตรที่ผลิตมัน (มัลติพลายเออร์ 1) ÷ ผลผลิตที่ได้ (basePieces ของสูตรนั้น)
+   *  stack = ไล่รายการ ingredientId ที่กำลัง resolve อยู่ในสายนี้ ใช้กันการอ้างอิงวนกลับ (circular dependency) */
+  function resolvedUnitCost(ing, stack) {
+    if (!ing) return { value: 0, error: null };
+    if (stack.indexOf(ing.id) !== -1) {
+      return { value: 0, error: 'พบการอ้างอิงวนกลับ (circular dependency) ของวัตถุดิบ "' + ing.name + '" ในสายการผลิต' };
+    }
+    var producer = producerRecipeOf(ing.id);
+    if (!producer) return { value: unitCost(ing), error: null };
+    var yieldQty = producer.basePieces || 0;
+    if (!yieldQty) {
+      return { value: 0, error: 'สูตร "' + producer.name + '" ยังไม่ได้ระบุผลผลิตที่ได้ จึงคำนวณต้นทุนต่อหน่วยของ "' + ing.name + '" ไม่ได้' };
+    }
+    var sub = costOfInternal(producer, 1, stack.concat(ing.id));
+    if (sub.error) return { value: 0, error: sub.error };
+    return { value: sub.total / yieldQty, error: null };
+  }
+
+  /** แกนคำนวณต้นทุนของสูตร ที่ตัวคูณ mult (1 = สูตรฐาน) — รองรับวัตถุดิบกึ่งสำเร็จรูปที่ไล่ย้อนได้หลายชั้น
+   *  (Raw Material -> Intermediate A -> Intermediate B -> Product) พร้อมกันวนลูปไม่ให้ crash */
+  function costOfInternal(recipe, mult, stack) {
+    var error = null;
     var lines = recipe.items.map(function (it) {
       var ing = ingById(it.ingredientId);
-      var uc = unitCost(ing);
+      var r = resolvedUnitCost(ing, stack);
+      if (r.error && !error) error = r.error;
       var qty = Math.round(it.qty * mult * 10) / 10;
       return {
         item: it,
         ing: ing,
         name: ing ? ing.name : '(ลบวัตถุดิบนี้ไปแล้ว)',
         unit: ing ? ing.unit : '-',
-        unitCost: uc,
+        unitCost: r.value,
+        costError: r.error || null,
         qty: qty,
-        cost: it.include ? qty * uc : 0
+        cost: it.include ? qty * r.value : 0
       };
     });
     var total = lines.reduce(function (s, l) { return s + l.cost; }, 0);
     var pieces = Math.round((recipe.basePieces || 0) * mult);
-    return { lines: lines, total: total, pieces: pieces, perPiece: pieces ? total / pieces : 0 };
+    return { lines: lines, total: total, pieces: pieces, perPiece: pieces ? total / pieces : 0, error: error };
+  }
+
+  /** คำนวณต้นทุนของสูตร ที่ตัวคูณ mult (1 = สูตรฐาน) */
+  function costOf(recipe, mult) {
+    mult = mult || 1;
+    return costOfInternal(recipe, mult, []);
   }
 
   /** ต้นทุนเต็ม (วัตถุดิบ + บรรจุภัณฑ์ + ค่าแรง) ต่อ 1 สูตรฐาน */
@@ -509,9 +554,10 @@ export function bootLegacyApp() {
         : '<p class="empty">ยังไม่มีสูตรในระบบ — ไปที่เมนู “สูตรขนม” แล้วกดเพิ่มสูตรใหม่</p>') +
       '</div>' +
 
-      '<div class="card"><h2>วัตถุดิบที่แพงที่สุด (ต่อหน่วย)</h2><div class="table-wrap"><table>' +
+      '<div class="card"><h2>วัตถุดิบที่แพงที่สุด (ต่อหน่วย) <span class="hint">เฉพาะวัตถุดิบตั้งต้นที่ซื้อเข้ามาโดยตรง</span></h2><div class="table-wrap"><table>' +
         '<thead><tr><th>วัตถุดิบ</th><th class="num">ราคาที่ซื้อ</th><th class="num">ขนาดบรรจุ</th><th class="num">ต้นทุน/หน่วย</th></tr></thead><tbody>' +
-        state.data.ingredients.slice().sort(function (a, b) { return unitCost(b) - unitCost(a); }).slice(0, 5)
+        state.data.ingredients.filter(function (i) { return !isIntermediate(i); })
+          .slice().sort(function (a, b) { return unitCost(b) - unitCost(a); }).slice(0, 5)
           .map(function (i) {
             return '<tr><td>' + esc(i.name) + '</td><td class="num">' + money(i.price) + ' บาท</td>' +
               '<td class="num">' + num(i.pack, 0) + ' ' + esc(i.unit) + '</td>' +
@@ -537,12 +583,21 @@ export function bootLegacyApp() {
     var c = costOf(r, 1);
     var mults = state.data.multipliers;
 
+    var producedIng = r.producesIngredientId ? ingById(r.producesIngredientId) : null;
+    var yieldLabel = producedIng ? ('ผลผลิตที่ได้ (' + esc(producedIng.unit) + ')') : 'จำนวนชิ้นที่ได้ต่อสูตรฐาน';
+
     /* ข้อมูลหัวสูตร */
     html += '<div class="card"><h2>ข้อมูลสูตร</h2><div class="grid cols-4">' +
       f('ชื่อสูตร', inp('text', 'r.name', r.name)) +
       f('หมวดหมู่', inp('text', 'r.category', r.category || '')) +
       f('ชื่อสูตรฐาน (เช่น ไข่ 6 ฟอง)', inp('text', 'r.baseLabel', r.baseLabel || '')) +
-      f('จำนวนชิ้นที่ได้ต่อสูตรฐาน', inp('number', 'r.basePieces', r.basePieces, 'step="1" min="0"')) +
+      f(yieldLabel, inp('number', 'r.basePieces', r.basePieces, 'step="1" min="0"')) +
+      '</div>' +
+      '<div class="grid cols-2" style="margin-top:12px">' +
+        f('สูตรนี้ผลิตวัตถุดิบกึ่งสำเร็จรูปหรือไม่', producesSelect('r.producesIngredientId', r)) +
+        (producedIng
+          ? f('สถานะ', matBadge(producedIng) + ' <span class="muted" style="margin-left:6px">ผลิต “' + esc(producedIng.name) + '”</span>')
+          : '') +
       '</div>' +
       '<div style="margin-top:12px">' + f('หมายเหตุ', inp('text', 'r.note', r.note || '')) + '</div>' +
       '<div class="actions" style="margin-top:14px">' +
@@ -552,6 +607,7 @@ export function bootLegacyApp() {
 
     /* ตารางวัตถุดิบ */
     html += '<div class="card"><h2>วัตถุดิบในสูตรฐาน <span class="hint">ติ๊ก “คิดต้นทุน” ออก = ไม่นับเป็นต้นทุน (เช่น วัตถุดิบที่มีอยู่แล้ว)</span></h2>' +
+      (c.error ? '<div class="note" style="margin-bottom:12px;border-left-color:var(--bad)">⚠ ' + esc(c.error) + '</div>' : '') +
       '<div class="table-wrap"><table><thead><tr>' +
         '<th style="min-width:170px">วัตถุดิบ</th><th class="num">ปริมาณ</th><th>หน่วย</th>' +
         '<th class="num">ต้นทุน/หน่วย</th><th style="text-align:center">คิดต้นทุน</th>' +
@@ -559,10 +615,13 @@ export function bootLegacyApp() {
       '</tr></thead><tbody>' +
       c.lines.map(function (l, idx) {
         return '<tr' + (l.item.include ? '' : ' class="row-off"') + '>' +
-          '<td>' + select('i.' + idx, l.item.ingredientId) + '</td>' +
+          '<td>' + select('i.' + idx, l.item.ingredientId) +
+            (l.ing ? '<div style="margin-top:4px">' + matBadge(l.ing) +
+              (l.costError ? ' <span class="mat-warn" title="' + esc(l.costError) + '">⚠</span>' : '') + '</div>' : '') +
+          '</td>' +
           '<td class="num">' + inp('number', 'q.' + idx, l.item.qty, 'step="0.1" min="0" class="cell-num"') + '</td>' +
           '<td class="muted">' + esc(l.unit) + '</td>' +
-          '<td class="num muted">' + num(l.unitCost, 4) + '</td>' +
+          '<td class="num muted">' + (l.costError ? '<span class="mat-warn" title="' + esc(l.costError) + '">คำนวณไม่ได้</span>' : num(l.unitCost, 4)) + '</td>' +
           '<td style="text-align:center"><input type="checkbox" data-bind="c.' + idx + '"' + (l.item.include ? ' checked' : '') + '></td>' +
           '<td class="num"><strong>' + money(l.cost) + '</strong></td>' +
           '<td><button class="btn ghost sm" data-act="del-item" data-idx="' + idx + '" title="ลบแถว">✕</button></td>' +
@@ -1109,7 +1168,8 @@ export function bootLegacyApp() {
             return r.items.some(function (it) { return it.ingredientId === i.id; });
           }).length;
           return '<tr>' +
-            '<td>' + inp('text', 'g.name.' + idx, i.name) + '</td>' +
+            '<td>' + inp('text', 'g.name.' + idx, i.name) +
+              '<div style="margin-top:4px">' + matBadge(i) + '</div></td>' +
             '<td>' + inp('text', 'g.unit.' + idx, i.unit, 'style="max-width:90px"') + '</td>' +
             '<td class="num">' + inp('number', 'g.pack.' + idx, i.pack, 'step="1" min="0" class="cell-num"') + '</td>' +
             '<td class="num">' + inp('number', 'g.price.' + idx, i.price, 'step="0.25" min="0" class="cell-num"') + '</td>' +
@@ -1169,19 +1229,40 @@ export function bootLegacyApp() {
     return '<input type="' + type + '" data-bind="' + bind + '" data-fkey="' + bind + '" value="' +
       esc(value) + '" ' + (extra || '') + '>';
   }
+  /** dropdown เลือกวัตถุดิบในสูตร — จัดกลุ่มตามประเภท (วัตถุดิบตั้งต้น / กึ่งสำเร็จรูป)
+   *  ค่าที่บันทึกยังเป็น ingredientId เดิมของระบบเสมอ ไม่มีการสร้าง id ใหม่หรือ duplicate record ใด ๆ */
   function select(bind, value) {
-    var groups = {};
-    state.data.ingredients.forEach(function (i) {
-      var cat = catOf(i);
-      (groups[cat] = groups[cat] || []).push(i);
-    });
-    var body = CATEGORIES.map(function (c) {
-      var items = groups[c.id];
-      if (!items || !items.length) return '';
-      return '<optgroup label="' + esc(c.label) + '">' + items.map(function (i) {
+    var groups = { raw: [], mid: [] };
+    state.data.ingredients.forEach(function (i) { groups[matKind(i)].push(i); });
+    var body = ['raw', 'mid'].map(function (kind) {
+      var items = groups[kind];
+      if (!items.length) return '';
+      return '<optgroup label="' + esc(MAT_LABEL[kind]) + '">' + items.map(function (i) {
         return '<option value="' + i.id + '"' + (i.id === value ? ' selected' : '') + '>' + esc(i.name) + '</option>';
       }).join('') + '</optgroup>';
     }).join('');
+    return '<select data-bind="' + bind + '" data-fkey="' + bind + '">' + body + '</select>';
+  }
+  /** dropdown เลือก "วัตถุดิบที่สูตรนี้ผลิตได้" (ถ้าเป็นสูตรผลิตวัตถุดิบกึ่งสำเร็จรูป)
+   *  กันเลือกซ้ำ: วัตถุดิบที่มีสูตรอื่นผลิตอยู่แล้วจะไม่โผล่ในลิสต์นี้ (1 วัตถุดิบ ผลิตได้จาก 1 สูตรเท่านั้น) */
+  function producesSelect(bind, recipe) {
+    var claimed = {};
+    state.data.recipes.forEach(function (rr) {
+      if (rr.id !== recipe.id && rr.producesIngredientId) claimed[rr.producesIngredientId] = true;
+    });
+    var groups = { raw: [], mid: [] };
+    state.data.ingredients.forEach(function (i) {
+      if (claimed[i.id]) return;
+      groups[matKind(i)].push(i);
+    });
+    var body = '<option value="">— ไม่ผลิตวัตถุดิบ (เป็นสูตรขนม/ผลิตภัณฑ์สำเร็จรูป) —</option>' +
+      ['raw', 'mid'].map(function (kind) {
+        var items = groups[kind];
+        if (!items.length) return '';
+        return '<optgroup label="' + esc(MAT_LABEL[kind]) + '">' + items.map(function (i) {
+          return '<option value="' + i.id + '"' + (i.id === recipe.producesIngredientId ? ' selected' : '') + '>' + esc(i.name) + '</option>';
+        }).join('') + '</optgroup>';
+      }).join('');
     return '<select data-bind="' + bind + '" data-fkey="' + bind + '">' + body + '</select>';
   }
   function categorySelect(bind, value) {
@@ -1340,9 +1421,9 @@ export function bootLegacyApp() {
       exportProdCsv(r);
 
     } else if (act === 'export-all-csv') {
-      var rows = [['ชื่อวัตถุดิบ', 'หน่วย', 'ขนาดบรรจุ', 'ราคาที่ซื้อ', 'ต้นทุนต่อหน่วย', 'หมายเหตุ']];
+      var rows = [['ชื่อวัตถุดิบ', 'ประเภท', 'หน่วย', 'ขนาดบรรจุ', 'ราคาที่ซื้อ', 'ต้นทุนต่อหน่วย', 'หมายเหตุ']];
       state.data.ingredients.forEach(function (i) {
-        rows.push([i.name, i.unit, i.pack, i.price, unitCost(i).toFixed(4), i.note || '']);
+        rows.push([i.name, MAT_LABEL[matKind(i)], i.unit, i.pack, i.price, resolvedUnitCost(i, []).value.toFixed(4), i.note || '']);
       });
       download('วัตถุดิบ.csv', csv(rows), 'text/csv;charset=utf-8');
 
