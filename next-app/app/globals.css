@@ -202,6 +202,10 @@ main {
   border-radius: var(--radius);
   padding: 20px 22px;
   box-shadow: var(--shadow);
+  /* ลูกของ CSS Grid มีความกว้างขั้นต่ำเริ่มต้นเท่ากับ min-content ของเนื้อหาข้างใน (ไม่ใช่ 0)
+     ถ้าข้อความข้างในยาวและตัดคำไม่ได้ (เช่น sub ยาว ๆ) การ์ดจะดันล้นออกนอกช่อง grid แทนที่จะตัดขึ้นบรรทัดใหม่
+     ตั้ง min-width: 0 ให้การ์อหดตามช่องจริงได้เสมอ แล้วให้ overflow-wrap ด้านล่างจัดการตัดคำแทน */
+  min-width: 0;
 }
 .stat .label {
   color: var(--muted);
@@ -209,6 +213,7 @@ main {
   font-weight: 500;
   letter-spacing: .02em;
   text-transform: uppercase;
+  overflow-wrap: break-word;
 }
 .stat .value {
   font-size: 34px;
@@ -217,8 +222,9 @@ main {
   line-height: 1.14;
   margin-top: 6px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: break-word;
 }
-.stat .sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.stat .sub { font-size: 13px; color: var(--muted); margin-top: 2px; overflow-wrap: break-word; }
 .stat.good .value { color: var(--good); }
 .stat.brand .value { color: var(--brand); }
 
