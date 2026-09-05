@@ -32,7 +32,9 @@ export function bootLegacyApp() {
   var saveTimer = null;
   var savePending = false;
   var dirty = false; // true = มีการแก้ไขที่ยังไม่ยืนยันว่าขึ้น D1 สำเร็จ (รอ retry อยู่)
-  var RECONNECT_PING_MS = 12000; // ห่างกันเท่าไรตอนพยายามเชื่อมต่อ D1 ใหม่หลังหลุด
+  // เดิมใช้แค่ตอนออฟไลน์ (เช็คว่ากลับมาต่อได้หรือยัง) ตอนนี้ pollLive() ใช้ค่านี้ตลอดเวลาที่เปิดหน้าเว็บทิ้งไว้ด้วย
+  // เพื่อดึงข้อมูลที่เครื่อง/สาขาอื่นเพิ่งบันทึกมาโชว์อัตโนมัติ (เห็นเปลี่ยนแปลงข้ามหน้าจอโดยไม่ต้อง refresh เอง)
+  var POLL_MS = 4000;
   var pendingSuccessMsg = null; // ข้อความ toast ที่ "รอ" แสดง จนกว่าจะรู้ผล PUT จริง (ไม่ใช่ตอนคลิกปุ่ม)
   var conflict = null; // ข้อมูลชุดล่าสุดจากเซิร์ฟเวอร์ ตอนเจอ version ชนกัน (409) — ไม่ null = มี conflict ค้างอยู่ ห้ามบันทึกซ้ำจนกว่าผู้ใช้จะเลือก
   var lastSyncAt = Date.now(); // เวลาที่ sync กับ D1 สำเร็จล่าสุด (GET หรือ PUT ที่ผ่าน) ใช้วัดว่า "ทิ้งหน้าไว้เฉย ๆ" นานแค่ไหน
@@ -214,6 +216,41 @@ export function bootLegacyApp() {
       });
   }
 
+  /** true ถ้าผู้ใช้กำลังโฟกัสอยู่ที่ช่องกรอกที่ "ไม่ผูกกับ state.data" (ไม่มี data-bind)
+   *  เช่นฟอร์มเพิ่มรายการบัญชีรายวัน (#ldgDesc/#ldgAmount/...) ที่อ่านค่าตอนกดปุ่มเท่านั้น
+   *  ช่องพวกนี้ re-render ทับได้จะหายทันทีเพราะ HTML ถูกสร้างใหม่จาก state.data ล้วน ๆ ไม่มีค่าที่พิมพ์ค้างให้ใส่กลับ
+   *  ส่วนช่องที่มี data-bind ปลอดภัยอยู่แล้ว เพราะทุกตัวอักษรที่พิมพ์ถูกเซฟลง state.data ทันทีตั้งแต่ event 'input' */
+  function hasUnsavedFreeformInput() {
+    var el = document.activeElement;
+    if (!el || !el.tagName) return false;
+    var tag = el.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return false;
+    return !(el.dataset && el.dataset.bind);
+  }
+
+  /** เอาข้อมูลจากเซิร์ฟเวอร์มาใช้แทนของเดิม — ทำก็ต่อเมื่อ "ปลอดภัยแน่ ๆ" เท่านั้น ไม่งั้นเสี่ยงทับ:
+   *  - มีการแก้ไขที่ยังไม่ยืนยันว่าขึ้น D1 สำเร็จ (dirty) หรือกำลังยิง PUT อยู่พอดี (savePending)
+   *  - มี conflict ค้างให้ผู้ใช้ตัดสินใจอยู่แล้ว (ห้ามไปทับก่อนเขาเลือกเอง)
+   *  - เผลอทับ version เดิม (เซิร์ฟเวอร์ยังไม่มีอะไรใหม่กว่าที่ถืออยู่)
+   *  - ผู้ใช้กำลังพิมพ์อยู่ในช่องที่ไม่ได้ผูกกับ state.data (ดู hasUnsavedFreeformInput) — รอรอบถัดไป
+   *  คืน true ถ้า apply สำเร็จ (เรียก render() ให้เรียบร้อยแล้ว) */
+  function applyRemoteIfNewer(remote) {
+    if (!remote || conflict || dirty || savePending) return false;
+    if (remote.stateVersion === state.data.stateVersion) return false;
+    if (hasUnsavedFreeformInput()) return false;
+
+    state.data = remote;
+    if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
+      state.data.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
+    }
+    cacheLocal();
+    if (!state.data.recipes.some(function (r) { return r.id === state.recipeId; })) {
+      state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;
+    }
+    render();
+    return true;
+  }
+
   /** เรียกบันทึกแบบหน่วงเวลา (debounce) กันยิง API ถี่เกินไปตอนพิมพ์
    *  ใส่ msg ถ้าอยากให้ขึ้น toast "สำเร็จ" — แต่ toast จะขึ้นก็ต่อเมื่อ PUT ไปถึง D1 จริงและสำเร็จเท่านั้น
    *  ไม่ใช่ทันทีที่เรียกฟังก์ชันนี้ (เดิมพลาดตรงนี้ ทำให้ผู้ใช้เห็น "สำเร็จ" ทั้งที่ยังไม่ได้ยิง PUT เลยด้วยซ้ำ) */
@@ -319,19 +356,34 @@ export function bootLegacyApp() {
       });
   }
 
-  /** เช็คการเชื่อมต่อ D1 เป็นระยะ ๆ ขณะออฟไลน์ — พอกลับมาต่อได้ ยิงข้อมูลที่ค้างอยู่ (dirty) ขึ้นทันที
-   *  ไม่ต้องรอผู้ใช้พิมพ์อะไรต่อ และไม่ต้องพึ่งการ reload หน้าเว็บ */
-  function pingReconnect() {
-    if (apiAvailable !== false) return; // ต่อได้อยู่แล้ว ไม่ต้อง ping ซ้ำ
-    fetch(API, { method: 'GET', cache: 'no-store' })
+  /** Poll ข้อมูลจาก D1 เป็นระยะทุก POLL_MS ตลอดเวลาที่เปิดหน้าเว็บทิ้งไว้ (เดิมเช็คแค่ตอนออฟไลน์)
+   *  ทำ 2 หน้าที่ในตัวเดียว:
+   *   1. ถ้าเพิ่งกลับมาต่อ D1 ได้หลังหลุด (apiAvailable เคยเป็น false) และมีของค้างจากตอนออฟไลน์ (dirty)
+   *      -> ส่งขึ้นทันที ไม่ต้องรอผู้ใช้พิมพ์อะไรต่อ หรือรอ reload หน้าเว็บ (พฤติกรรมเดิม)
+   *   2. ถ้าต่อได้อยู่แล้วปกติ -> เช็คว่ามีคนอื่น (เครื่อง/สาขาอื่น) บันทึกข้อมูลใหม่เข้ามาไหม ถ้ามีและปลอดภัย
+   *      (ดู applyRemoteIfNewer) ก็เอามาโชว์ให้ทันทีโดยไม่ต้องกด refresh เอง — นี่คือส่วนที่ทำให้ "เห็นข้อมูล
+   *      อัปเดตข้ามหน้าจอ" ได้ ไม่ใช่แค่กันหลุดเหมือนเดิม
+   *  หยุด poll ตอนแท็บถูกซ่อนอยู่ (สลับไปแท็บ/แอปอื่น) กัน D1 HTTP API โดนยิงถี่ ๆ ทั้งที่ไม่มีใครดูจอจริง */
+  function pollLive() {
+    if (document.hidden) return;
+    var wasOffline = apiAvailable === false;
+    fetch(API, { cache: 'no-store' })
       .then(function (res) {
         if (!res.ok) throw new Error('status ' + res.status);
+        return res.json();
+      })
+      .then(function (remote) {
         apiAvailable = true;
         lastSyncAt = Date.now();
-        stamp();
-        if (dirty && !conflict) saveRemote(); // มีข้อมูลค้างจากตอนออฟไลน์ (และไม่ได้ติด conflict ค้างอยู่) -> ส่งทันที
+        if (wasOffline) {
+          stamp();
+          if (dirty && !conflict) { saveRemote(); return; } // ของค้างจากตอนออฟไลน์ (ไม่ติด conflict) -> ส่งก่อนเลย
+        }
+        applyRemoteIfNewer(remote);
       })
-      .catch(function () { /* ยังต่อ D1 ไม่ได้ รอ ping รอบหน้า */ });
+      .catch(function () {
+        if (apiAvailable !== false) { apiAvailable = false; stamp(); }
+      });
   }
 
   function stamp() {
@@ -1606,11 +1658,18 @@ export function bootLegacyApp() {
     render();
   });
 
-  // 3) เช็คว่า D1 กลับมาต่อได้หรือยังเป็นระยะ ๆ ตลอดเวลาที่เปิดหน้าเว็บทิ้งไว้
-  var reconnectTimer = setInterval(pingReconnect, RECONNECT_PING_MS);
+  // 3) Poll หาข้อมูลใหม่จาก D1 เป็นระยะตลอดเวลาที่เปิดหน้าเว็บทิ้งไว้ — ทั้งกันหลุด (ping เดิม) และดึงข้อมูล
+  //    ที่เครื่อง/สาขาอื่นเพิ่งบันทึกมาโชว์ให้อัตโนมัติ (ดู pollLive/applyRemoteIfNewer ด้านบน)
+  var pollTimer = setInterval(pollLive, POLL_MS);
+
+  // สลับกลับมาที่แท็บนี้ (เช่นสลับไปแอปอื่นแล้วกลับมา) -> poll ทันทีหนึ่งครั้ง ไม่ต้องรอรอบถัดไป
+  // ให้ความรู้สึก "เปิดมาเจอของใหม่ทันที" แทนที่จะรอสูงสุด POLL_MS วินาทีเฉย ๆ
+  function onVisible() { if (!document.hidden) pollLive(); }
+  document.addEventListener('visibilitychange', onVisible);
 
   return function teardown() {
-    clearInterval(reconnectTimer);
+    clearInterval(pollTimer);
+    document.removeEventListener('visibilitychange', onVisible);
     booted = false;
   };
 }
