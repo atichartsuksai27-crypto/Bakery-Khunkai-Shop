@@ -1168,8 +1168,10 @@ export function bootLegacyApp() {
             '<td class="num"><strong>' + num(unitCost(i), 4) + '</strong><br><span class="muted" style="font-size:12px">บาท/' + esc(i.unit) + '</span></td>' +
             '<td>' + categorySelect('g.category.' + idx, catOf(i)) + '</td>' +
             '<td>' + inp('text', 'g.note.' + idx, i.note || '') + '</td>' +
-            '<td>' + (used ? '<span class="chip">ใช้ใน ' + used + ' สูตร</span>' :
-              '<button class="btn ghost sm" data-act="del-ing" data-idx="' + idx + '">✕</button>') + '</td>' +
+            '<td style="white-space:nowrap">' +
+              (used ? '<span class="chip">ใช้ใน ' + used + ' สูตร</span> ' : '') +
+              '<button class="btn ghost sm" data-act="del-ing" data-idx="' + idx + '" data-used="' + used + '">✕</button>' +
+            '</td>' +
           '</tr>';
         }).join('') +
         '</tbody></table></div></div>';
@@ -1234,6 +1236,11 @@ export function bootLegacyApp() {
         return '<option value="' + i.id + '"' + (i.id === value ? ' selected' : '') + '>' + esc(i.name) + '</option>';
       }).join('') + '</optgroup>';
     }).join('');
+    // วัตถุดิบที่ถูกลบไปแล้วแต่ยังมี id ค้างอยู่ในสูตร (ดู costOf()) — ใส่ตัวเลือกพิเศษไว้
+    // ไม่งั้น select จะโชว์ตัวแรกในลิสต์แบบเงียบ ๆ ทำให้ผู้ใช้เข้าใจผิดว่าสูตรยังอ้างถึงวัตถุดิบนั้นอยู่
+    if (value && !ingById(value)) {
+      body = '<option value="' + esc(value) + '" selected disabled>(ลบวัตถุดิบนี้ไปแล้ว)</option>' + body;
+    }
     return '<select data-bind="' + bind + '" data-fkey="' + bind + '">' + body + '</select>';
   }
   function categorySelect(bind, value) {
@@ -1382,8 +1389,19 @@ export function bootLegacyApp() {
       render();
 
     } else if (act === 'del-ing') {
-      state.data.ingredients.splice(+b.dataset.idx, 1);
-      save(); render();
+      var delIdx = +b.dataset.idx;
+      var delIng = state.data.ingredients[delIdx];
+      var delUsed = +b.dataset.used || 0;
+      var delMsg = delUsed
+        // ถ้ายังถูกใช้อยู่ในสูตร ต้องเตือนให้ชัดว่าบรรทัดนั้นจะกลายเป็น "(ลบวัตถุดิบนี้ไปแล้ว)"
+        // และคิดต้นทุนเป็น 0 ทันที (ดู costOf() / ingById()) — ไม่ได้ลบบรรทัดในสูตรออกให้อัตโนมัติ
+        ? 'วัตถุดิบ “' + delIng.name + '” ถูกใช้อยู่ใน ' + delUsed + ' สูตร\n' +
+          'ถ้าลบ บรรทัดที่ใช้วัตถุดิบนี้ในสูตรเหล่านั้นจะคิดต้นทุนเป็น 0 บาท (ไม่ได้ลบบรรทัดออกให้)\n' +
+          'ต้องการลบต่อไหม?'
+        : 'ลบวัตถุดิบ “' + delIng.name + '” ?';
+      if (!confirm(delMsg)) return;
+      state.data.ingredients.splice(delIdx, 1);
+      save('ลบวัตถุดิบแล้ว'); render();
 
     } else if (act === 'export-csv' && r) {
       exportScaleCsv(r);
