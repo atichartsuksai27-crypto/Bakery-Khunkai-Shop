@@ -1,5 +1,9 @@
-# Bakery Khunkai — Cloudflare Pages + D1
-# database_id จะถูกเติมอัตโนมัติหลังสร้างฐานข้อมูลด้วย: npm run db:create
+# Bakery Khunkai — ไฟล์นี้เป็นของ Cloudflare Pages deployment เดิม (legacy)
+# เว็บจริงตอนนี้รันบน Vercel ทั้งหมดแล้ว (ดู next-app/) ไฟล์นี้เหลือไว้ดู database_id
+# อ้างอิงเท่านั้น — ห้ามรัน `npm run deploy` / `wrangler pages deploy` จากไฟล์นี้อีก
+# เพราะจะสร้างเว็บอีกชุดที่โค้ดเก่าค้าง (ไม่มีฟีเจอร์ที่เพิ่มทีหลังใน next-app) แต่ชี้ D1 ตัวเดียวกับของจริง
+# ถ้าเคย deploy ไปแล้วและยังมี Cloudflare Pages project ชื่อ bakery-khunkai-shop อยู่ ให้ไปลบทิ้งที่
+# Cloudflare dashboard > Workers & Pages โดยตรง (คนละเมนูกับ D1 เลย ลบแล้วข้อมูลใน D1 ไม่หายแน่นอน)
 
 name = "bakery-khunkai-shop"
 pages_build_output_dir = "."

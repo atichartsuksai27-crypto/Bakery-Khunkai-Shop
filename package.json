@@ -9,7 +9,7 @@
     "db:create": "wrangler d1 create bakery-khunkai-db",
     "db:migrate": "wrangler d1 execute bakery-khunkai-db --remote --file=migrations/0001_init.sql",
     "db:migrate:local": "wrangler d1 execute bakery-khunkai-db --local --file=migrations/0001_init.sql",
-    "deploy": "wrangler pages deploy . --project-name=bakery-khunkai-shop"
+    "deploy": "echo 'DEPRECATED: เว็บนี้ไม่ได้รันบน Cloudflare Pages แล้ว ย้ายไป Vercel ทั้งหมด (ดู next-app/) การรันคำสั่งนี้จะสร้างเว็บอีกชุดที่โค้ดเก่าค้าง แต่ชี้ D1 ตัวเดียวกับของจริง หากตั้งใจจะรันจริง ๆ ให้ใช้: wrangler pages deploy . --project-name=bakery-khunkai-shop' && exit 1"
   },
   "devDependencies": {
     "wrangler": "^4.120.0"
