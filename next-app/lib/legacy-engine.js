@@ -297,7 +297,7 @@ export function bootLegacyApp() {
    *  คืน true ถ้า apply สำเร็จ (เรียก render() ให้เรียบร้อยแล้ว) */
   function applyRemoteIfNewer(remote) {
     if (!remote || dirty || savePending) return false;
-    if (remote.stateVersion === state.data.stateVersion) return false;
+    if (!(remote.stateVersion > (state.data.stateVersion || 0))) return false; // เอาเฉพาะที่ใหม่กว่าจริง ไม่ทับด้วยของเก่า
     if (hasUnsavedFreeformInput()) return false;
 
     state.data = remote;
@@ -443,6 +443,8 @@ export function bootLegacyApp() {
   function pollLive() {
     if (document.hidden) return;
     var wasOffline = apiAvailable === false;
+    var seqAtStart = saveSeq;
+    var verAtStart = state.data.stateVersion;
     fetch(API, { cache: 'no-store' })
       .then(function (res) {
         if (!res.ok) throw new Error('status ' + res.status);
@@ -455,6 +457,8 @@ export function bootLegacyApp() {
           stamp();
           if (dirty) { saveRemote(); return; } // ของค้างจากตอนออฟไลน์ -> ส่งก่อนเลย
         }
+        // ระหว่างที่ poll กำลังบิน ผู้ใช้อาจพิมพ์/บันทึกไปแล้ว -> ผลที่ได้เก่ากว่าของในเครื่อง ทิ้งไป รอบหน้าค่อยเช็คใหม่
+        if (seqAtStart !== saveSeq || verAtStart !== state.data.stateVersion) return;
         applyRemoteIfNewer(remote);
       })
       .catch(function () {
@@ -1215,7 +1219,7 @@ export function bootLegacyApp() {
       '<h2>' + (editEntry ? 'แก้ไขรายการ' : 'บันทึกรายการใหม่') + '</h2><div class="grid cols-4">' +
         f('วันที่', '<input type="date" id="ldgDate" value="' + esc(editEntry ? editEntry.date : defaultEntryDate(mk)) + '">') +
         f('รายการ', '<input type="text" id="ldgDesc" placeholder="เช่น ขายเค้กกล้วยหอม 10 กล่อง" value="' + esc(editEntry ? editEntry.desc : '') + '">') +
-        f('จำนวนเงิน (บาท)', '<input type="number" id="ldgAmount" min="0" step="0.01" placeholder="0.00" value="' + (editEntry ? editEntry.amount : '') + '">') +
+        f('จำนวนเงิน (บาท)', '<input type="text" inputmode="decimal" data-num="1" id="ldgAmount" placeholder="0.00" value="' + (editEntry ? editEntry.amount : '') + '">') +
         f('หมวด', ledgerCategorySelect(editEntry ? editEntry.category : '')) +
       '</div>' +
       '<div class="pill-list" style="margin-top:12px">' +
@@ -1617,7 +1621,7 @@ export function bootLegacyApp() {
       var dateEl = document.getElementById('ldgDate');
       var catEl = document.getElementById('ldgCategory');
       var desc = descEl ? descEl.value.trim() : '';
-      var amount = amtEl ? parseFloat(amtEl.value) : NaN;
+      var amount = amtEl ? parseFloat(String(amtEl.value).replace(/,/g, '')) : NaN;
       var ldgDate = (dateEl && dateEl.value) ? dateEl.value : todayStr();
       var category = catEl ? catEl.value : '';
 
