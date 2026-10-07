@@ -310,7 +310,7 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--brand);
   box-shadow: 0 0 0 4px var(--brand-soft);
 }
-input[type=number] { text-align: right; font-variant-numeric: tabular-nums; }
+input[type=number], input[data-num] { text-align: right; font-variant-numeric: tabular-nums; }
 td input { padding: 6px 10px; border-radius: 9px; }
 td input.cell-num { max-width: 112px; }
 input[type=checkbox] {

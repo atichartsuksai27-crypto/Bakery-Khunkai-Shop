@@ -1380,7 +1380,10 @@ export function bootLegacyApp() {
     return '<div><label class="field">' + esc(label) + '</label>' + control + '</div>';
   }
   function inp(type, bind, value, extra) {
-    return '<input type="' + type + '" data-bind="' + bind + '" data-fkey="' + bind + '" value="' +
+    // ช่องตัวเลขใช้ type=text + inputmode=decimal แทน type=number: number input อ่านตำแหน่งเคอร์เซอร์ไม่ได้
+    // ทำให้ render() ซ้ำหลังพิมพ์แล้วเคอร์เซอร์เด้งไปหน้าสุด (พิมพ์ 25 ได้ 52) — text เก็บตำแหน่ง/ค่าที่พิมพ์ค้างได้
+    var isNum = type === 'number';
+    return '<input type="' + (isNum ? 'text' : type) + '"' + (isNum ? ' inputmode="decimal" data-num="1"' : '') + ' data-bind="' + bind + '" data-fkey="' + bind + '" value="' +
       esc(value) + '" ' + (extra || '') + '>';
   }
   /** ช่องตัวเลขที่ถ้าค่าเป็น 0 ให้แสดงว่างพร้อม placeholder "0" — พิมพ์ได้เลยไม่ต้องลบเลข 0 ก่อน */
@@ -1423,7 +1426,9 @@ export function bootLegacyApp() {
     var active = document.activeElement;
     var fkey = active && active.dataset ? active.dataset.fkey : null;
     var pos = null;
-    try { pos = active ? active.selectionStart : null; } catch (e) { /* number input */ }
+    var raw = null; // ค่าที่ผู้ใช้พิมพ์ค้างอยู่จริง (เช่น '1.' หรือ '0.0') — ห้ามให้ render ทับด้วยค่าที่ parse แล้ว
+    try { pos = active ? active.selectionStart : null; } catch (e) { /* ignore */ }
+    if (fkey && active.dataset.num) raw = active.value;
 
     app.innerHTML = (V[state.view] || V.dashboard)();
 
@@ -1434,6 +1439,7 @@ export function bootLegacyApp() {
     if (fkey) {
       var el = app.querySelector('[data-fkey="' + fkey + '"]');
       if (el) {
+        if (raw !== null && el.dataset.num) el.value = raw;
         el.focus();
         try { if (pos != null) el.setSelectionRange(pos, pos); } catch (e) { /* ignore */ }
       }
@@ -1456,8 +1462,12 @@ export function bootLegacyApp() {
     var bind = el.dataset ? el.dataset.bind : null;
     if (!bind) return;
 
+    if (el.dataset.num) {
+      var cleaned = el.value.replace(/[^0-9.,]/g, ''); // ช่องตัวเลข รับเฉพาะเลข จุด คอมมา
+      if (cleaned !== el.value) el.value = cleaned;
+    }
     var val = el.type === 'checkbox' ? el.checked
-      : el.type === 'number' ? (parseFloat(el.value) || 0)
+      : el.dataset.num ? (parseFloat(String(el.value).replace(/,/g, '')) || 0)
         : el.value;
     var part = bind.split('.');
     var r = currentRecipe();
