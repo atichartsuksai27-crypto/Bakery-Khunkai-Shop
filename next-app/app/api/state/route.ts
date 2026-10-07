@@ -127,7 +127,9 @@ export async function PUT(request: Request) {
     ingredients: body.ingredients,
     recipes: body.recipes,
     multipliers: Array.isArray(body.multipliers) ? body.multipliers : SEED.multipliers,
-    ledger: normalizeLedger(body.ledger)
+    ledger: normalizeLedger(body.ledger),
+    // อัตราค่าใช้จ่ายของร้าน (ค่าแรง/แก๊ส/ไฟ) ใช้คิดราคาขาย — ต้องเก็บไว้ด้วย ไม่งั้นหายทุกครั้งที่บันทึก
+    shop: body.shop && typeof body.shop === 'object' ? body.shop : undefined
   });
 
   // เขียนทับได้ก็ต่อเมื่อ stateVersion ที่ client ถืออยู่ตรงกับ version ล่าสุดใน D1 เท่านั้น (optimistic lock)

@@ -493,15 +493,60 @@ export function bootLegacyApp() {
     return { lines: lines, total: total, pieces: pieces, perPiece: pieces ? total / pieces : 0 };
   }
 
+  /** ค่าใช้จ่ายของร้านที่ใช้ร่วมกันทุกสูตร (ค่าแรงต่อชั่วโมง ฯลฯ) — เติมค่าตั้งต้นให้ถ้ายังไม่เคยตั้ง */
+  function shopData() {
+    var s = state.data.shop;
+    if (!s || typeof s !== 'object') s = state.data.shop = {};
+    if (!isFinite(s.wagePerHour)) s.wagePerHour = 0;
+    if (!isFinite(s.gasTankPrice)) s.gasTankPrice = 0;
+    if (!isFinite(s.gasTankHours)) s.gasTankHours = 0;
+    if (!isFinite(s.electricPerHour)) s.electricPerHour = 0;
+    if (!isFinite(s.deliveryFeePct)) s.deliveryFeePct = 32;
+    return s;
+  }
+  /** ค่าแก๊ส+ไฟ ต่อ 1 ชั่วโมงที่เปิดเตา */
+  function energyPerHour() {
+    var s = shopData();
+    var gas = s.gasTankHours > 0 ? s.gasTankPrice / s.gasTankHours : 0;
+    return gas + (s.electricPerHour || 0);
+  }
+  function pkgItemPerPiece(it) {
+    if (!it || !(it.packQty > 0)) return 0;
+    var use = isFinite(it.perPiece) && it.perPiece > 0 ? it.perPiece : 1;
+    return (it.packPrice || 0) / it.packQty * use;
+  }
+  /** บรรจุภัณฑ์ต่อชิ้น + ค่าแรง/แก๊ส/ไฟต่อรอบ ของสูตร
+   *  ถ้าผู้ใช้กรอกรายการ/เวลาไว้ ใช้ที่คำนวณให้ ไม่งั้นใช้ตัวเลขรวมแบบเดิม (p.packaging / p.labor) */
+  function extraCosts(recipe) {
+    var p = recipe.pricing || {};
+    var items = Array.isArray(p.pkgItems) ? p.pkgItems : [];
+    var packaging = items.length
+      ? items.reduce(function (s, it) { return s + pkgItemPerPiece(it); }, 0)
+      : (p.packaging || 0);
+    var hasTime = (p.workMin || 0) > 0 || (p.bakeMin || 0) > 0;
+    var work = (p.workMin || 0) / 60 * shopData().wagePerHour;
+    var energy = (p.bakeMin || 0) / 60 * energyPerHour();
+    return {
+      packaging: packaging,
+      labor: hasTime ? work + energy : (p.labor || 0),
+      work: work,
+      energy: energy,
+      hasTime: hasTime
+    };
+  }
+
   /** ต้นทุนเต็ม (วัตถุดิบ + บรรจุภัณฑ์ + ค่าแรง) ต่อ 1 สูตรฐาน */
   function fullCost(recipe) {
-    var p = recipe.pricing || { packaging: 0, labor: 0, sellPrice: 0 };
+    var p = recipe.pricing || { sellPrice: 0 };
+    var x = extraCosts(recipe);
     var c = costOf(recipe, 1);
-    var total = c.total + (p.labor || 0) + (p.packaging || 0) * c.pieces;
+    var total = c.total + x.labor + x.packaging * c.pieces;
     var perPiece = c.pieces ? total / c.pieces : 0;
     var sell = p.sellPrice || 0;
     return {
       material: c.total,
+      packagingPerPiece: x.packaging,
+      labor: x.labor,
       pieces: c.pieces,
       total: total,
       perPiece: perPiece,
@@ -714,7 +759,7 @@ export function bootLegacyApp() {
   /* ---------------------------------------------------- ตั้งราคาขาย */
   V.pricing = function () {
     var r = currentRecipe();
-    var html = head('ตั้งราคาขาย', 'บวกค่าบรรจุภัณฑ์และค่าแรงเข้าไป เพื่อดูกำไรที่แท้จริง');
+    var html = head('ตั้งราคาขาย', 'กรอกแค่ของที่รู้อยู่แล้ว (ราคาซื้อถุง เวลาทำงาน) ระบบคิดราคาขายให้เอง');
     if (!r) return html + '<p class="empty">ยังไม่มีสูตรในระบบ</p>';
 
     html += '<div class="card"><div class="pill-list">' +
@@ -723,43 +768,90 @@ export function bootLegacyApp() {
       }).join('') + '</div></div>';
 
     var p = r.pricing || (r.pricing = { packaging: 0, labor: 0, sellPrice: 0 });
+    if (!Array.isArray(p.pkgItems)) p.pkgItems = [];
+    var shop = shopData();
+    var x = extraCosts(r);
     var k = fullCost(r);
+    var pieces = k.pieces || 0;
 
-    html += '<div class="card"><h2>ต้นทุนที่ต้องบวกเพิ่ม (ต่อ 1 สูตรฐาน)</h2><div class="grid cols-3">' +
-      f('ค่าบรรจุภัณฑ์ต่อชิ้น (บาท)', inp('number', 'p.packaging', p.packaging || 0, 'step="0.25" min="0"')) +
-      f('ค่าแรง + ค่าแก๊ส/ไฟ ต่อรอบ (บาท)', inp('number', 'p.labor', p.labor || 0, 'step="1" min="0"')) +
-      f('ราคาขายต่อชิ้น (บาท)', inp('number', 'p.sellPrice', p.sellPrice || 0, 'step="0.5" min="0"')) +
+    /* ① บรรจุภัณฑ์ */
+    html += '<div class="card"><h2>① บรรจุภัณฑ์ <span class="hint">กรอกราคาที่ซื้อมาเป็นแพ็ค ระบบหารเป็นต่อชิ้นให้</span></h2>';
+    if (p.pkgItems.length) {
+      html += '<div class="table-wrap"><table><thead><tr><th>รายการ</th><th class="num">ราคาซื้อ/แพ็ค (บาท)</th>' +
+        '<th class="num">ได้กี่ชิ้น/แพ็ค</th><th class="num">ใช้ต่อขนม 1 ชิ้น</th><th class="num">ตกชิ้นละ</th><th></th></tr></thead><tbody>' +
+        p.pkgItems.map(function (it, idx) {
+          return '<tr>' +
+            '<td>' + inp('text', 'k.' + idx + '.name', it.name || '', 'placeholder="เช่น ถุงใส"') + '</td>' +
+            '<td>' + inp('number', 'k.' + idx + '.packPrice', it.packPrice || 0, 'step="0.5" min="0"') + '</td>' +
+            '<td>' + inp('number', 'k.' + idx + '.packQty', it.packQty || 0, 'step="1" min="0"') + '</td>' +
+            '<td>' + inp('number', 'k.' + idx + '.perPiece', isFinite(it.perPiece) ? it.perPiece : 1, 'step="0.5" min="0"') + '</td>' +
+            '<td class="num">' + money(pkgItemPerPiece(it)) + '</td>' +
+            '<td><button class="btn ghost sm" data-act="del-pkg" data-idx="' + idx + '" title="ลบแถว">✕</button></td></tr>';
+        }).join('') +
+        '</tbody><tfoot><tr><td colspan="4">รวมบรรจุภัณฑ์ต่อชิ้น</td><td class="num">' + money(x.packaging) + '</td><td></td></tr></tfoot></table></div>';
+    } else {
+      html += '<p class="muted">ยังไม่ได้เพิ่มรายการ' +
+        (p.packaging > 0 ? ' — ตอนนี้ใช้ค่ารวมเดิม <strong>' + money(p.packaging) + ' บาท/ชิ้น</strong> (เพิ่มรายการเพื่อให้ระบบคิดแทน)' : ' (ไม่มีบรรจุภัณฑ์ = 0 บาท)') + '</p>';
+    }
+    html += '<div class="actions" style="margin-top:12px"><button class="btn" data-act="add-pkg">+ เพิ่มบรรจุภัณฑ์ (ถุง กล่อง สติกเกอร์)</button></div></div>';
+
+    /* ② ค่าแรง + แก๊ส/ไฟ */
+    html += '<div class="card"><h2>② ค่าแรง และ ค่าแก๊ส/ไฟ <span class="hint">กรอกเวลา ระบบคิดเป็นบาทให้</span></h2>' +
+      '<div class="grid cols-3">' +
+        f('ใช้เวลาทำงานต่อรอบ (นาที) — ผสม ปั้น แต่ง บรรจุ', inp('number', 'p.workMin', p.workMin || 0, 'step="5" min="0"')) +
+        f('ใช้เวลาเปิดเตาอบต่อรอบ (นาที)', inp('number', 'p.bakeMin', p.bakeMin || 0, 'step="5" min="0"')) +
+        f('ค่าแรง + แก๊ส/ไฟ ต่อรอบ (คำนวณให้)', '<div class="big">' + money(x.labor) + ' บาท</div>') +
+      '</div>';
+    if (!x.hasTime && p.labor > 0) {
+      html += '<p class="muted" style="margin-top:8px">ตอนนี้ใช้ค่ารวมเดิม <strong>' + money(p.labor) + ' บาท/รอบ</strong> — กรอกเวลาด้านบนเพื่อให้ระบบคิดแทน</p>';
+    } else if (x.hasTime) {
+      html += '<p class="muted" style="margin-top:8px">ค่าแรง ' + money(x.work) + ' + แก๊ส/ไฟ ' + money(x.energy) + ' บาท</p>';
+    }
+    html += '<details style="margin-top:12px"><summary>อัตราของร้าน (ใช้ร่วมกันทุกสูตร — ปรับให้ตรงกับร้านคุณ)</summary>' +
+      '<div class="grid cols-4" style="margin-top:12px">' +
+        f('ค่าแรงต่อชั่วโมง (บาท)', inp('number', 'h.wagePerHour', shop.wagePerHour, 'step="5" min="0"')) +
+        f('ราคาถังแก๊ส (บาท)', inp('number', 'h.gasTankPrice', shop.gasTankPrice, 'step="10" min="0"')) +
+        f('ถังหนึ่งเปิดเตาได้กี่ชั่วโมง', inp('number', 'h.gasTankHours', shop.gasTankHours, 'step="1" min="0"')) +
+        f('ค่าไฟเตา/เครื่องผสม ต่อชั่วโมง (บาท)', inp('number', 'h.electricPerHour', shop.electricPerHour, 'step="1" min="0"')) +
+      '</div><p class="muted" style="margin-top:8px">แก๊ส+ไฟ ตกชั่วโมงละ ' + money(energyPerHour()) + ' บาท</p></details></div>';
+
+    /* ③ ราคาขาย */
+    var margin = p.targetMarginPct > 0 && p.targetMarginPct < 100 ? p.targetMarginPct : 60;
+    var rec = k.perPiece > 0 ? Math.ceil(k.perPiece / (1 - margin / 100)) : 0;
+    var feePct = shop.deliveryFeePct >= 0 && shop.deliveryFeePct < 100 ? shop.deliveryFeePct : 0;
+    var deliv = rec > 0 ? Math.ceil(rec / (1 - feePct / 100)) : 0;
+    html += '<div class="card"><h2>③ ราคาขายที่ควรตั้ง</h2>' +
+      '<div class="pill-list" style="margin-bottom:12px"><span class="muted">อยากได้กำไรกี่ % ของราคาขาย:</span>' +
+      [40, 50, 60, 70].map(function (m) {
+        return '<button class="pill' + (margin === m ? ' is-active' : '') + '" data-act="set-margin" data-v="' + m + '">' + m + '%</button>';
+      }).join('') + '</div>' +
+      '<div class="grid cols-3">' +
+        stat('ต้นทุนรวมต่อชิ้น', money(k.perPiece) + ' <span class="sub">บาท</span>',
+          'วัตถุดิบ ' + money(pieces ? k.material / pieces : 0) + ' + บรรจุภัณฑ์ ' + money(k.packagingPerPiece) + ' + แรง/แก๊ส ' + money(pieces ? k.labor / pieces : 0)) +
+        stat('ราคาแนะนำ (หน้าร้าน)', num(rec, 0) + ' <span class="sub">บาท/ชิ้น</span>', 'ได้กำไร ' + money(rec - k.perPiece) + ' บาท/ชิ้น', 'good') +
+        stat('ราคาแนะนำ (แอปเดลิเวอรี)', num(deliv, 0) + ' <span class="sub">บาท/ชิ้น</span>', 'ชดเชยค่าธรรมเนียมแอป ' + num(feePct, 0) + '%') +
+      '</div>' +
+      '<div class="actions" style="margin-top:12px"><button class="btn primary" data-act="use-price" data-v="' + rec + '">ใช้ราคา ' + num(rec, 0) + ' บาท เป็นราคาขาย</button></div>' +
+      '<div class="grid cols-3" style="margin-top:16px">' +
+        f('ราคาขายที่ใช้จริง (บาท/ชิ้น) — แก้เองได้', inp('number', 'p.sellPrice', p.sellPrice || 0, 'step="0.5" min="0"')) +
+        f('ค่าธรรมเนียมแอปเดลิเวอรี (%)', inp('number', 'h.deliveryFeePct', shop.deliveryFeePct, 'step="1" min="0"')) +
       '</div></div>';
 
     html += '<div class="grid cols-4">' +
-      stat('ต้นทุนรวมต่อชิ้น', money(k.perPiece) + ' <span class="sub">บาท</span>', 'วัตถุดิบ ' + money(k.material / (k.pieces || 1)) + ' + อื่น ๆ') +
-      stat('กำไรต่อชิ้น', money(k.profitPerPiece) + ' <span class="sub">บาท</span>', '', k.profitPerPiece >= 0 ? 'good' : '') +
+      stat('กำไรต่อชิ้น', money(k.profitPerPiece) + ' <span class="sub">บาท</span>', 'ที่ราคาขาย ' + money(k.sell) + ' บาท', k.profitPerPiece >= 0 ? 'good' : '') +
       stat('% กำไรจากราคาขาย', pct(k.margin), 'ขนมอบทั่วไปควรได้ 50–65%') +
-      stat('ต้องขายกี่ชิ้นถึงคุ้มทุน', num(k.breakEven, 0) + ' <span class="sub">ชิ้น</span>', 'จากทั้งหมด ' + num(k.pieces, 0) + ' ชิ้น') +
+      stat('กำไรต่อรอบผลิต', money(k.profitPerBatch) + ' <span class="sub">บาท</span>', 'ขายหมด ' + num(pieces, 0) + ' ชิ้น', k.profitPerBatch >= 0 ? 'good' : '') +
+      stat('ต้องขายกี่ชิ้นถึงคุ้มทุน', num(k.breakEven, 0) + ' <span class="sub">ชิ้น</span>', 'จากทั้งหมด ' + num(pieces, 0) + ' ชิ้น') +
       '</div>';
 
-    html += '<div class="grid cols-2">' +
-      '<div class="card"><h2>สรุปต่อ 1 รอบผลิต</h2><div class="table-wrap"><table><tbody>' +
-        kv('ค่าวัตถุดิบ', money(k.material) + ' บาท') +
-        kv('ค่าบรรจุภัณฑ์ (' + num(k.pieces, 0) + ' ชิ้น)', money((p.packaging || 0) * k.pieces) + ' บาท') +
-        kv('ค่าแรง / ค่าแก๊ส-ไฟ', money(p.labor || 0) + ' บาท') +
-        kv('<strong>ต้นทุนรวม</strong>', '<strong>' + money(k.total) + ' บาท</strong>') +
-        kv('รายได้ถ้าขายหมด', money(k.revenue) + ' บาท') +
-        kv('<strong>กำไรต่อรอบ</strong>', '<strong class="' + (k.profitPerBatch >= 0 ? 'good' : 'bad') + '">' + money(k.profitPerBatch) + ' บาท</strong>') +
-      '</tbody></table></div></div>' +
-
-      '<div class="card"><h2>ราคาแนะนำ <span class="hint">คิดจากต้นทุนรวมต่อชิ้น</span></h2><div class="table-wrap"><table>' +
-        '<thead><tr><th>บวกกำไรจากต้นทุน</th><th class="num">ราคาที่คำนวณได้</th><th class="num">ราคาแนะนำ</th><th class="num">กำไร/ชิ้น</th></tr></thead><tbody>' +
-        [0.5, 0.8, 1.0, 1.5, 2.0].map(function (m) {
-          var raw = k.perPiece * (1 + m);
-          var sug = Math.ceil(raw);
-          return '<tr><td>+' + num(m * 100, 0) + '%</td><td class="num muted">' + money(raw) + '</td>' +
-            '<td class="num"><strong>' + num(sug, 0) + ' บาท</strong></td>' +
-            '<td class="num good">' + money(sug - k.perPiece) + '</td></tr>';
-        }).join('') +
-      '</tbody></table></div>' +
-      '<div class="note" style="margin-top:12px">ราคาแนะนำยังไม่รวมค่าธรรมเนียมแอปเดลิเวอรี (ปกติหัก 30–32%) — ถ้าขายผ่านแอปควรตั้งสูงกว่าหน้าร้าน</div>' +
-      '</div></div>';
+    html += '<div class="card"><h2>สรุปต่อ 1 รอบผลิต</h2><div class="table-wrap"><table><tbody>' +
+      kv('ค่าวัตถุดิบ', money(k.material) + ' บาท') +
+      kv('ค่าบรรจุภัณฑ์ (' + num(pieces, 0) + ' ชิ้น)', money(k.packagingPerPiece * pieces) + ' บาท') +
+      kv('ค่าแรง / ค่าแก๊ส-ไฟ', money(k.labor) + ' บาท') +
+      kv('<strong>ต้นทุนรวม</strong>', '<strong>' + money(k.total) + ' บาท</strong>') +
+      kv('รายได้ถ้าขายหมด', money(k.revenue) + ' บาท') +
+      kv('<strong>กำไรต่อรอบ</strong>', '<strong class="' + (k.profitPerBatch >= 0 ? 'good' : 'bad') + '">' + money(k.profitPerBatch) + ' บาท</strong>') +
+      '</tbody></table></div></div>';
 
     return html;
   };
@@ -1320,6 +1412,8 @@ export function bootLegacyApp() {
 
     if (part[0] === 'r' && r) { r[part[1]] = val; }
     else if (part[0] === 'p' && r) { r.pricing[part[1]] = val; }
+    else if (part[0] === 'k' && r) { r.pricing.pkgItems[+part[1]][part[2]] = val; }
+    else if (part[0] === 'h') { shopData()[part[1]] = val; }
     else if (part[0] === 'q' && r) { r.items[+part[1]].qty = val; }
     else if (part[0] === 'c' && r) { r.items[+part[1]].include = val; }
     else if (part[0] === 'i' && r) { r.items[+part[1]].ingredientId = val; }
@@ -1374,6 +1468,23 @@ export function bootLegacyApp() {
       if (!state.data.ingredients.length) return toast('ยังไม่มีวัตถุดิบในคลัง');
       r.items.push({ ingredientId: state.data.ingredients[0].id, qty: 0, include: true });
       save(); render();
+
+    } else if (act === 'add-pkg' && r) {
+      if (!Array.isArray(r.pricing.pkgItems)) r.pricing.pkgItems = [];
+      r.pricing.pkgItems.push({ name: '', packPrice: 0, packQty: 100, perPiece: 1 });
+      save(); render();
+
+    } else if (act === 'del-pkg' && r) {
+      r.pricing.pkgItems.splice(+b.dataset.idx, 1);
+      save(); render();
+
+    } else if (act === 'set-margin' && r) {
+      r.pricing.targetMarginPct = +b.dataset.v;
+      save(); render();
+
+    } else if (act === 'use-price' && r) {
+      r.pricing.sellPrice = +b.dataset.v || 0;
+      save('ตั้งราคาขายแล้ว'); render();
 
     } else if (act === 'del-item' && r) {
       r.items.splice(+b.dataset.idx, 1);

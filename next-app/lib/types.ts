@@ -52,6 +52,8 @@ export interface AppState {
   recipes: Recipe[];
   multipliers: number[];
   ledger: Ledger;
+  /** อัตราค่าใช้จ่ายของร้านที่ใช้คิดราคาขาย (ค่าแรง/ชม., ถังแก๊ส, ค่าไฟ, ค่าธรรมเนียมเดลิเวอรี %) */
+  shop?: Record<string, number>;
   /** ใส่ให้ตอนอ่านออกจาก D1 เท่านั้น ไม่ได้เก็บอยู่ใน JSON */
   updatedAt?: string;
   stateVersion?: number;
