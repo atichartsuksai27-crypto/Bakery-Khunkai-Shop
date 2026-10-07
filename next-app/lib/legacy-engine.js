@@ -34,9 +34,11 @@ export function bootLegacyApp() {
   var dirty = false; // true = มีการแก้ไขที่ยังไม่ยืนยันว่าขึ้น D1 สำเร็จ (รอ retry อยู่)
   // เดิมใช้แค่ตอนออฟไลน์ (เช็คว่ากลับมาต่อได้หรือยัง) ตอนนี้ pollLive() ใช้ค่านี้ตลอดเวลาที่เปิดหน้าเว็บทิ้งไว้ด้วย
   // เพื่อดึงข้อมูลที่เครื่อง/สาขาอื่นเพิ่งบันทึกมาโชว์อัตโนมัติ (เห็นเปลี่ยนแปลงข้ามหน้าจอโดยไม่ต้อง refresh เอง)
-  var POLL_MS = 4000;
+  var POLL_MS = 2500;
   var pendingSuccessMsg = null; // ข้อความ toast ที่ "รอ" แสดง จนกว่าจะรู้ผล PUT จริง (ไม่ใช่ตอนคลิกปุ่ม)
-  var conflict = null; // ข้อมูลชุดล่าสุดจากเซิร์ฟเวอร์ ตอนเจอ version ชนกัน (409) — ไม่ null = มี conflict ค้างอยู่ ห้ามบันทึกซ้ำจนกว่าผู้ใช้จะเลือก
+  var syncedBase = null; // สำเนาข้อมูลชุดล่าสุดที่รู้ว่าตรงกับเซิร์ฟเวอร์ — ใช้เป็นฐานตอน merge เมื่อมีเครื่องอื่นบันทึกชนกัน
+  var saveSeq = 0; // นับจำนวนครั้งที่ save() — ใช้รู้ว่ามีการแก้ไขเพิ่มระหว่างที่ PUT กำลังบิน
+  var conflictRetries = 0;
   var lastSyncAt = Date.now(); // เวลาที่ sync กับ D1 สำเร็จล่าสุด (GET หรือ PUT ที่ผ่าน) ใช้วัดว่า "ทิ้งหน้าไว้เฉย ๆ" นานแค่ไหน
   var IDLE_REFRESH_MS = 15 * 60 * 1000; // เกินนี้แล้วยังไม่เคย sync -> บังคับโหลดข้อมูลล่าสุดก่อนยอมให้บันทึกครั้งต่อไป
 
@@ -196,6 +198,66 @@ export function bootLegacyApp() {
     } catch (e) { return false; }
   }
 
+  /* ----- Auto-merge: เมื่อเครื่องอื่นบันทึกชนกัน ไม่ถามผู้ใช้ — ผสานการแก้ไขของสองฝั่งเข้าด้วยกันเอง -----
+   * three-way merge: base = ข้อมูลที่ตรงกับเซิร์ฟเวอร์ครั้งล่าสุด, local = ในเครื่องนี้, remote = ล่าสุดบนเซิร์ฟเวอร์
+   * - ฝั่งไหนไม่เคยแก้จาก base ใช้ของอีกฝั่ง  - แก้คนละรายการ (ตาม id) เก็บไว้ทั้งคู่
+   * - แก้ค่าเดียวกันพร้อมกัน เครื่องนี้ชนะ  - ลบฝั่งหนึ่งแต่อีกฝั่งแก้ ถือว่าเก็บไว้ (ไม่ทำให้ข้อมูลหาย) */
+  function deepEq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+  function isPlainObj(v) { return v && typeof v === 'object' && !Array.isArray(v); }
+  function hasIds(arr) {
+    return arr.every(function (x) { return isPlainObj(x) && typeof x.id === 'string'; });
+  }
+  function mergeThreeWay(b, l, r) {
+    if (deepEq(l, r)) return l;
+    if (deepEq(l, b)) return r;
+    if (deepEq(r, b)) return l;
+    if (isPlainObj(l) && isPlainObj(r)) {
+      var bb = isPlainObj(b) ? b : {};
+      var out = {};
+      Object.keys(l).concat(Object.keys(r)).forEach(function (k) {
+        if (k in out) return;
+        var v = mergeThreeWay(bb[k], l[k], r[k]);
+        if (v !== undefined) out[k] = v;
+      });
+      return out;
+    }
+    if (Array.isArray(l) && Array.isArray(r) && hasIds(l) && hasIds(r)) {
+      var ba = Array.isArray(b) && hasIds(b) ? b : [];
+      var byId = function (arr) { var m = {}; arr.forEach(function (x) { m[x.id] = x; }); return m; };
+      var bm = byId(ba), lm = byId(l), rm = byId(r);
+      var merged = [];
+      var seen = {};
+      r.concat(l).forEach(function (x) {
+        var id = x.id;
+        if (seen[id]) return;
+        seen[id] = true;
+        var ob = bm[id], ol = lm[id], or = rm[id];
+        if (!ol) { if (deepEq(or, ob)) return; merged.push(or); return; } // เราลบ: ลบจริงถ้าอีกฝั่งไม่ได้แก้
+        if (!or) { if (deepEq(ol, ob)) return; merged.push(ol); return; } // เขาลบ: ลบจริงถ้าเราไม่ได้แก้
+        merged.push(mergeThreeWay(ob, ol, or));
+      });
+      return merged;
+    }
+    return l; // ค่าเดียว/อาร์เรย์ไม่มี id ที่แก้พร้อมกัน — เครื่องนี้ชนะ
+  }
+
+  /** ผสานข้อมูลของเครื่องนี้เข้ากับข้อมูลล่าสุดจากเซิร์ฟเวอร์ แล้วใช้ version ใหม่ — พร้อมให้ยิง PUT ซ้ำได้ทันที */
+  function mergeWithServer(server) {
+    var merged = mergeThreeWay(syncedBase, state.data, server);
+    merged.stateVersion = server.stateVersion;
+    merged.updatedAt = server.updatedAt || merged.updatedAt;
+    state.data = merged;
+    syncedBase = clone(server);
+    if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
+      state.data.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
+    }
+    cacheLocal();
+    if (!state.data.recipes.some(function (r) { return r.id === state.recipeId; })) {
+      state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;
+    }
+    if (!hasUnsavedFreeformInput()) render();
+  }
+
   /** ดึงข้อมูลกลางจาก Cloudflare D1 — คืน null ถ้าเรียกไม่สำเร็จ (ให้ใช้ข้อมูลในเครื่องแทน) */
   function loadRemote() {
     return fetch(API, { cache: 'no-store' })
@@ -230,16 +292,16 @@ export function bootLegacyApp() {
 
   /** เอาข้อมูลจากเซิร์ฟเวอร์มาใช้แทนของเดิม — ทำก็ต่อเมื่อ "ปลอดภัยแน่ ๆ" เท่านั้น ไม่งั้นเสี่ยงทับ:
    *  - มีการแก้ไขที่ยังไม่ยืนยันว่าขึ้น D1 สำเร็จ (dirty) หรือกำลังยิง PUT อยู่พอดี (savePending)
-   *  - มี conflict ค้างให้ผู้ใช้ตัดสินใจอยู่แล้ว (ห้ามไปทับก่อนเขาเลือกเอง)
    *  - เผลอทับ version เดิม (เซิร์ฟเวอร์ยังไม่มีอะไรใหม่กว่าที่ถืออยู่)
    *  - ผู้ใช้กำลังพิมพ์อยู่ในช่องที่ไม่ได้ผูกกับ state.data (ดู hasUnsavedFreeformInput) — รอรอบถัดไป
    *  คืน true ถ้า apply สำเร็จ (เรียก render() ให้เรียบร้อยแล้ว) */
   function applyRemoteIfNewer(remote) {
-    if (!remote || conflict || dirty || savePending) return false;
+    if (!remote || dirty || savePending) return false;
     if (remote.stateVersion === state.data.stateVersion) return false;
     if (hasUnsavedFreeformInput()) return false;
 
     state.data = remote;
+    syncedBase = clone(remote);
     if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
       state.data.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
     }
@@ -260,6 +322,7 @@ export function bootLegacyApp() {
     cacheLocal();
     markPendingLocal(true);
     dirty = true;
+    saveSeq++;
     stamp();
     savePending = true;
     clearTimeout(saveTimer);
@@ -269,9 +332,8 @@ export function bootLegacyApp() {
   /** จุดเริ่มของการบันทึกจริง — ยิง PUT ขึ้น D1 เสมอไม่ว่า apiAvailable จะเป็นอะไรอยู่ก่อนหน้า
    *  (เดิมถ้าเคย fail ครั้งเดียวจะไม่ลองอีกเลยจนกว่าจะ reload หน้า — แก้แล้ว)
    *  แต่ถ้าทิ้งหน้าไว้เฉย ๆ เกิน 15 นาทีโดยไม่เคย sync เลย จะบังคับเช็คข้อมูลล่าสุดก่อน ไม่ยอมยิง PUT ทับตรง ๆ
-   *  และถ้ามี conflict ค้างอยู่ (409 ไปแล้วรอบก่อน) จะไม่ยิงซ้ำจนกว่าผู้ใช้จะกดโหลดข้อมูลล่าสุด */
+   *  ถ้า PUT ชน (409) จะผสานข้อมูลกับของเซิร์ฟเวอร์แล้วยิงซ้ำเอง ไม่แจ้งเตือนผู้ใช้ */
   function saveRemote() {
-    if (conflict) return;
     // ไม่มี stateVersion เลย (เช่น save() หลุดมาก่อน loadRemote() ครั้งแรกจะเสร็จ) หรือทิ้งหน้าไว้เฉยเกิน 15 นาที
     // -> ต้องเช็คข้อมูลล่าสุดก่อนเสมอ ห้ามยิง PUT ทับตรง ๆ โดยไม่รู้ version ที่แท้จริง
     if (!state.data.stateVersion || Date.now() - lastSyncAt > IDLE_REFRESH_MS) { refreshBeforeStaleSave(); return; }
@@ -279,7 +341,7 @@ export function bootLegacyApp() {
   }
 
   /** ทิ้งหน้าไว้นานเกิน 15 นาที -> เช็คก่อนว่า version ที่เราถืออยู่ยังตรงกับเซิร์ฟเวอร์ไหม
-   *  ตรง -> ยิง PUT ต่อได้เลย, ไม่ตรง -> มีคนแก้ไปแล้วระหว่างที่เราไม่ได้ใช้งาน ต้องแจ้งเตือนแทนที่จะเขียนทับ */
+   *  ตรง -> ยิง PUT ต่อได้เลย, ไม่ตรง -> มีคนแก้ไปแล้วระหว่างที่เราไม่ได้ใช้งาน ผสานการแก้ไขเข้าด้วยกันแล้วบันทึก (ไม่เขียนทับ ไม่ต้องถามผู้ใช้) */
   function refreshBeforeStaleSave() {
     fetch(API, { cache: 'no-store' })
       .then(function (res) {
@@ -292,10 +354,8 @@ export function bootLegacyApp() {
         if (server.stateVersion === state.data.stateVersion) {
           doPutNow(); // ไม่มีใครแก้ไขอะไรระหว่างที่เราไม่ได้ใช้งาน -> ปลอดภัย บันทึกต่อได้
         } else {
-          savePending = false;
-          conflict = server;
-          stamp();
-          showConflictAlert();
+          mergeWithServer(server); // มีคนแก้ระหว่างที่ไม่ได้ใช้งาน -> ผสานให้เองแล้วบันทึกต่อ
+          doPutNow();
         }
       })
       .catch(function (e) {
@@ -308,10 +368,12 @@ export function bootLegacyApp() {
   }
 
   function doPutNow() {
+    var seq = saveSeq;
+    var sent = JSON.stringify(state.data);
     fetch(API, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(state.data)
+      body: sent
     })
       .then(function (res) {
         if (res.status === 409) {
@@ -328,26 +390,40 @@ export function bootLegacyApp() {
       .then(function (r) {
         apiAvailable = true;
         lastSyncAt = Date.now();
+        conflictRetries = 0;
+        var newVersion = r.stateVersion || state.data.stateVersion;
         state.data.updatedAt = r.updatedAt || state.data.updatedAt;
-        state.data.stateVersion = r.stateVersion || state.data.stateVersion;
-        dirty = false;
-        markPendingLocal(false);
+        state.data.stateVersion = newVersion;
+        syncedBase = JSON.parse(sent);
+        syncedBase.stateVersion = newVersion;
+        // ถ้ามีการแก้ไขเพิ่มระหว่างที่ PUT กำลังบิน (saveSeq เปลี่ยน) ห้ามเคลียร์ dirty — timer รอบใหม่จะส่งต่อเอง
+        var editedSince = seq !== saveSeq;
+        dirty = editedSince;
+        if (!editedSince) markPendingLocal(false);
         cacheLocal(); // อัปเดต stateVersion/updatedAt ล่าสุดลง cache ด้วย ไม่ใช่แค่ในหน่วยความจำ
-        savePending = false;
+        savePending = editedSince;
         stamp();
         hideSaveError();
         if (pendingSuccessMsg) { toast(pendingSuccessMsg); pendingSuccessMsg = null; }
       })
       .catch(function (e) {
-        savePending = false;
-        if (e && e.conflict) {
+        if (e && e.conflict && e.serverData) {
+          // มีเครื่องอื่นบันทึกไปก่อน -> ผสานการแก้ไขของเราเข้ากับของเขา แล้วยิงซ้ำทันที ไม่แจ้งเตือนผู้ใช้
           apiAvailable = true; // เชื่อมต่อได้ปกติ แค่ข้อมูลชนกัน ไม่ใช่ปัญหาเน็ต
           lastSyncAt = Date.now();
-          conflict = e.serverData;
-          stamp();
-          showConflictAlert();
+          conflictRetries++;
+          if (conflictRetries <= 8) {
+            mergeWithServer(e.serverData);
+            doPutNow();
+          } else {
+            // ชนต่อเนื่องหลายรอบ (มีคนบันทึกถี่มาก) -> พักสั้น ๆ แล้วลองใหม่ ข้อมูลยังอยู่ในเครื่องครบ
+            conflictRetries = 0;
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(saveRemote, 1500);
+          }
           return;
         }
+        savePending = false;
         apiAvailable = false;
         console.warn('บันทึกขึ้นฐานข้อมูลกลางไม่สำเร็จ:', e.message);
         stamp();
@@ -377,7 +453,7 @@ export function bootLegacyApp() {
         lastSyncAt = Date.now();
         if (wasOffline) {
           stamp();
-          if (dirty && !conflict) { saveRemote(); return; } // ของค้างจากตอนออฟไลน์ (ไม่ติด conflict) -> ส่งก่อนเลย
+          if (dirty) { saveRemote(); return; } // ของค้างจากตอนออฟไลน์ -> ส่งก่อนเลย
         }
         applyRemoteIfNewer(remote);
       })
@@ -432,7 +508,7 @@ export function bootLegacyApp() {
   function showSaveError(msg) {
     var el = document.getElementById('saveAlert');
     if (!el) return;
-    el.textContent = msg; // ตั้ง textContent ล้าง innerHTML เดิมไปในตัว (เผื่อก่อนหน้าเป็นแถบ conflict ที่มีปุ่มอยู่)
+    el.textContent = msg; // ตั้ง textContent ล้าง innerHTML เดิมไปในตัว
     el.hidden = false;
     clearTimeout(el._timer);
     el._timer = setTimeout(function () { el.hidden = true; }, 6000);
@@ -443,18 +519,6 @@ export function bootLegacyApp() {
     clearTimeout(el._timer);
     el.hidden = true;
   }
-  /** แจ้งเตือน "มีคนอื่นบันทึกทับไปก่อนแล้ว" — ไม่ auto-hide เพราะต้องรอให้ผู้ใช้ตัดสินใจกดปุ่มเอง
-   *  ปุ่มในนี้ไม่ได้อยู่ใต้ #app จึงต้องมี listener แยกต่างหาก (ผูกไว้ท้ายไฟล์) */
-  function showConflictAlert() {
-    var el = document.getElementById('saveAlert');
-    if (!el) return;
-    clearTimeout(el._timer);
-    el.innerHTML = 'มีการเปลี่ยนแปลงข้อมูลจากเครื่องอื่นระหว่างที่คุณกำลังแก้ไข — ระบบไม่ได้บันทึกทับให้ เพื่อป้องกันข้อมูลหาย' +
-      '<br><button type="button" class="btn sm" id="conflictReloadBtn" ' +
-      'style="margin-top:8px;background:#fff;color:var(--bad);border-color:#fff">โหลดข้อมูลล่าสุด</button>';
-    el.hidden = false;
-  }
-
   /* ============================================================ calc */
 
   function ingById(id) {
@@ -1378,370 +1442,6 @@ export function bootLegacyApp() {
     render();
   });
 
-  /* ปุ่ม "โหลดข้อมูลล่าสุด" ในแถบแจ้งเตือน conflict — อยู่นอก #app จึงต้องผูก listener แยกต่างหาก */
-  var saveAlertEl = document.getElementById('saveAlert');
-  if (saveAlertEl) {
-    saveAlertEl.addEventListener('click', function (e) {
-      if (e.target.id !== 'conflictReloadBtn' || !conflict) return;
-      if (!confirm('การโหลดข้อมูลล่าสุดจะทิ้งการแก้ไขที่ยังไม่ได้บันทึกในเครื่องนี้ทิ้งไป ต้องการดำเนินการต่อไหม?')) return;
-      state.data = conflict;
-      conflict = null;
-      dirty = false;
-      markPendingLocal(false); // ผู้ใช้เลือกทิ้งของที่ค้างไว้เองแล้ว ไม่งั้นบูตครั้งหน้าจะยังคิดว่ามีของค้างอยู่
-      cacheLocal();
-      hideSaveError();
-      if (!state.data.recipes.some(function (r) { return r.id === state.recipeId; })) {
-        state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;
-      }
-      render();
-      toast('โหลดข้อมูลล่าสุดแล้ว');
-    });
-  }
-
-  /* ผูกค่าจาก input กลับเข้า model */
-  app.addEventListener('input', function (e) {
-    var el = e.target;
-    var bind = el.dataset ? el.dataset.bind : null;
-    if (!bind) return;
-
-    var val = el.type === 'checkbox' ? el.checked
-      : el.type === 'number' ? (parseFloat(el.value) || 0)
-        : el.value;
-    var part = bind.split('.');
-    var r = currentRecipe();
-
-    if (part[0] === 'r' && r) { r[part[1]] = val; }
-    else if (part[0] === 'p' && r) { r.pricing[part[1]] = val; }
-    else if (part[0] === 'k' && r) { r.pricing.pkgItems[+part[1]][part[2]] = val; }
-    else if (part[0] === 'h') { shopData()[part[1]] = val; }
-    else if (part[0] === 'q' && r) { r.items[+part[1]].qty = val; }
-    else if (part[0] === 'c' && r) { r.items[+part[1]].include = val; }
-    else if (part[0] === 'i' && r) { r.items[+part[1]].ingredientId = val; }
-    else if (part[0] === 'g') { state.data.ingredients[+part[2]][part[1]] = val; }
-    else if (part[0] === 's') { state.targetPieces = val; render(); return; }
-    else if (part[0] === 'lmk') { setLedgerMonth(val); return; }
-
-    save();
-    render();
-  });
-
-  app.addEventListener('change', function (e) {
-    if (e.target.id === 'importFile' && e.target.files[0]) importFile(e.target.files[0]);
-  });
-
-  app.addEventListener('click', function (e) {
-    var b = e.target.closest('[data-act]');
-    if (!b) return;
-    var act = b.dataset.act;
-    var r = currentRecipe();
-
-    if (act === 'open-recipe') {
-      state.recipeId = b.dataset.id;
-      if (state.view === 'dashboard') state.view = 'recipes';
-      render();
-
-    } else if (act === 'add-recipe') {
-      var nr = {
-        id: uid('rcp'), name: 'สูตรใหม่', category: '', baseLabel: '1 รอบ',
-        basePieces: 10, note: '', items: [], pricing: { packaging: 0, labor: 0, sellPrice: 0 }
-      };
-      state.data.recipes.push(nr);
-      state.recipeId = nr.id;
-      state.view = 'recipes';
-      save('เพิ่มสูตรใหม่แล้ว'); render();
-
-    } else if (act === 'dup-recipe' && r) {
-      var cp = clone(r);
-      cp.id = uid('rcp');
-      cp.name = r.name + ' (สำเนา)';
-      state.data.recipes.push(cp);
-      state.recipeId = cp.id;
-      save('ทำสำเนาแล้ว'); render();
-
-    } else if (act === 'del-recipe' && r) {
-      if (!confirm('ลบสูตร “' + r.name + '” ?')) return;
-      state.data.recipes = state.data.recipes.filter(function (x) { return x.id !== r.id; });
-      state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;
-      save('ลบสูตรแล้ว'); render();
-
-    } else if (act === 'add-item' && r) {
-      if (!state.data.ingredients.length) return toast('ยังไม่มีวัตถุดิบในคลัง');
-      r.items.push({ ingredientId: state.data.ingredients[0].id, qty: 0, include: true });
-      save(); render();
-
-    } else if (act === 'add-pkg' && r) {
-      if (!Array.isArray(r.pricing.pkgItems)) r.pricing.pkgItems = [];
-      r.pricing.pkgItems.push({ name: '', packPrice: 0, packQty: 100, perPiece: 1 });
-      save(); render();
-
-    } else if (act === 'del-pkg' && r) {
-      r.pricing.pkgItems.splice(+b.dataset.idx, 1);
-      save(); render();
-
-    } else if (act === 'set-margin' && r) {
-      r.pricing.targetMarginPct = +b.dataset.v;
-      save(); render();
-
-    } else if (act === 'use-price' && r) {
-      r.pricing.sellPrice = +b.dataset.v || 0;
-      save('ตั้งราคาขายแล้ว'); render();
-
-    } else if (act === 'del-item' && r) {
-      r.items.splice(+b.dataset.idx, 1);
-      save(); render();
-
-    } else if (act === 'add-ing') {
-      var newCat = state.ingFilter !== 'all' ? state.ingFilter : 'other';
-      state.data.ingredients.push({ id: uid('ing'), name: 'วัตถุดิบใหม่', unit: 'กรัม', pack: 1000, price: 0, note: '', category: newCat });
-      save('เพิ่มวัตถุดิบแล้ว'); render();
-
-    } else if (act === 'filter-ing') {
-      state.ingFilter = b.dataset.cat;
-      render();
-
-    } else if (act === 'del-ing') {
-      var delIdx = +b.dataset.idx;
-      var delIng = state.data.ingredients[delIdx];
-      var delUsed = +b.dataset.used || 0;
-      var delMsg = delUsed
-        // ถ้ายังถูกใช้อยู่ในสูตร ต้องเตือนให้ชัดว่าบรรทัดนั้นจะกลายเป็น "(ลบวัตถุดิบนี้ไปแล้ว)"
-        // และคิดต้นทุนเป็น 0 ทันที (ดู costOf() / ingById()) — ไม่ได้ลบบรรทัดในสูตรออกให้อัตโนมัติ
-        ? 'วัตถุดิบ “' + delIng.name + '” ถูกใช้อยู่ใน ' + delUsed + ' สูตร\n' +
-          'ถ้าลบ บรรทัดที่ใช้วัตถุดิบนี้ในสูตรเหล่านั้นจะคิดต้นทุนเป็น 0 บาท (ไม่ได้ลบบรรทัดออกให้)\n' +
-          'ต้องการลบต่อไหม?'
-        : 'ลบวัตถุดิบ “' + delIng.name + '” ?';
-      if (!confirm(delMsg)) return;
-      state.data.ingredients.splice(delIdx, 1);
-      save('ลบวัตถุดิบแล้ว'); render();
-
-    } else if (act === 'export-csv' && r) {
-      exportScaleCsv(r);
-
-    } else if (act === 'export-prod-csv' && r) {
-      exportProdCsv(r);
-
-    } else if (act === 'export-all-csv') {
-      var rows = [['ชื่อวัตถุดิบ', 'หน่วย', 'ขนาดบรรจุ', 'ราคาที่ซื้อ', 'ต้นทุนต่อหน่วย', 'หมายเหตุ']];
-      state.data.ingredients.forEach(function (i) {
-        rows.push([i.name, i.unit, i.pack, i.price, unitCost(i).toFixed(4), i.note || '']);
-      });
-      download('วัตถุดิบ.csv', csv(rows), 'text/csv;charset=utf-8');
-
-    } else if (act === 'export-json') {
-      download('bakery-khunkai-backup.json', JSON.stringify(state.data, null, 2), 'application/json');
-
-    } else if (act === 'import-json') {
-      document.getElementById('importFile').click();
-
-    } else if (act === 'reset') {
-      if (!confirm('รีเซ็ตข้อมูลทั้งหมดกลับเป็นค่าตั้งต้น?')) return;
-      var keepVersionReset = state.data.stateVersion; // รักษา stateVersion ปัจจุบันไว้ ไม่งั้นระบบกันเขียนทับจะปฏิเสธการบันทึกนี้
-      state.data = clone(SEED_DATA);
-      state.data.stateVersion = keepVersionReset;
-      state.recipeId = null;
-      save('รีเซ็ตเรียบร้อย'); render();
-
-    } else if (act === 'print') {
-      window.print();
-
-    } else if (act === 'ldg-type') {
-      state.ledgerDraftType = b.dataset.type;
-      state.ledgerFormError = '';
-      render();
-
-    } else if (act === 'ldg-add') {
-      var descEl = document.getElementById('ldgDesc');
-      var amtEl = document.getElementById('ldgAmount');
-      var dateEl = document.getElementById('ldgDate');
-      var catEl = document.getElementById('ldgCategory');
-      var desc = descEl ? descEl.value.trim() : '';
-      var amount = amtEl ? parseFloat(amtEl.value) : NaN;
-      var ldgDate = (dateEl && dateEl.value) ? dateEl.value : todayStr();
-      var category = catEl ? catEl.value : '';
-
-      if (!desc) { state.ledgerFormError = 'กรุณากรอกรายการ'; render(); return; }
-      if (!isFinite(amount) || amount <= 0) { state.ledgerFormError = 'กรุณากรอกจำนวนเงินให้ถูกต้อง (มากกว่า 0)'; render(); return; }
-      if (!category) { state.ledgerFormError = 'กรุณาเลือกหมวด'; render(); return; }
-
-      var editingEntry = state.ledgerEditingId ? ledgerEntryById(state.ledgerEditingId) : null;
-      if (editingEntry) {
-        // แก้ไขรายการเดิม — แก้ field ตรง ๆ ไม่สร้างรายการใหม่ ไม่กระทบ id (ที่ผูกกับลำดับการเรียงเดิม)
-        editingEntry.date = ldgDate;
-        editingEntry.desc = desc;
-        editingEntry.type = state.ledgerDraftType;
-        editingEntry.category = category;
-        editingEntry.amount = amount;
-        state.ledgerEditingId = null;
-      } else {
-        state.data.ledger.entries.push({
-          id: uid('ldg'), date: ldgDate, desc: desc,
-          type: state.ledgerDraftType, category: category, amount: amount
-        });
-      }
-      state.ledgerFormError = '';
-      state.ledgerDate = ldgDate;
-      // ถ้าบันทึกลงเดือนอื่น (เช่นเลือกวันที่ย้อนหลัง) ให้สลับไปดูรอบบัญชีของเดือนนั้นทันที
-      // ไม่งั้นผู้ใช้จะกดบันทึกแล้วไม่เห็นรายการที่เพิ่งเพิ่ม/แก้ เพราะมันไปอยู่คนละรอบเดือน
-      var addedMk = monthKeyOf(ldgDate);
-      if (addedMk !== currentLedgerMonth()) {
-        state.ledgerMonth = addedMk;
-        state.ledgerMonthPinned = addedMk !== todayMonthStr();
-      }
-      save(editingEntry ? 'แก้ไขรายการแล้ว' : 'บันทึกรายการแล้ว'); render();
-
-    } else if (act === 'ldg-edit') {
-      var editTarget = ledgerEntryById(b.dataset.id);
-      if (!editTarget) return;
-      state.ledgerEditingId = editTarget.id;
-      state.ledgerDraftType = editTarget.type;
-      state.ledgerFormError = '';
-      render();
-      var formCard = document.getElementById('ldgFormCard');
-      if (formCard && formCard.scrollIntoView) formCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-    } else if (act === 'ldg-edit-cancel') {
-      state.ledgerEditingId = null;
-      state.ledgerFormError = '';
-      render();
-
-    } else if (act === 'ldg-day-toggle') {
-      var dkey = b.dataset.date;
-      if (state.ledgerExpandedDays[dkey]) delete state.ledgerExpandedDays[dkey];
-      else state.ledgerExpandedDays[dkey] = true;
-      render();
-
-    } else if (act === 'ldg-del') {
-      if (!confirm('ลบรายการนี้?')) return;
-      state.data.ledger.entries = state.data.ledger.entries.filter(function (x) { return x.id !== b.dataset.id; });
-      if (state.ledgerEditingId === b.dataset.id) state.ledgerEditingId = null; // กันฟอร์มค้างแก้ไขรายการที่ถูกลบไปแล้ว
-      save(); render();
-
-    } else if (act === 'ldg-showall') {
-      state.ledgerDate = 'all';
-      render();
-
-    } else if (act === 'ldg-cal-pick') {
-      // แตะวันที่บน Calendar — กรองรายการของวันนั้นทันที (เหมือนเลือกวันที่บนหน้าจองตั๋วเครื่องบิน)
-      state.ledgerDate = b.dataset.date;
-      render();
-
-    } else if (act === 'ldg-today') {
-      setLedgerMonth(todayMonthStr());
-      state.ledgerDate = todayStr();
-      render();
-
-    } else if (act === 'ldg-month-prev') {
-      setLedgerMonth(prevMonthKey(currentLedgerMonth()));
-
-    } else if (act === 'ldg-month-next') {
-      var nx = nextMonthKey(currentLedgerMonth());
-      if (nx > todayMonthStr()) return; // ไม่ให้ข้ามไปเดือนอนาคต
-      setLedgerMonth(nx);
-
-    } else if (act === 'ldg-month-now') {
-      setLedgerMonth(todayMonthStr());
-
-    } else if (act === 'ldg-export') {
-      exportLedgerCsv();
-    }
-  });
-
-  /* ============================================================ export */
-
-  function csv(rows) {
-    return '﻿' + rows.map(function (r) {
-      return r.map(function (c) {
-        c = String(c == null ? '' : c);
-        return /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c;
-      }).join(',');
-    }).join('\r\n');
-  }
-
-  function download(name, text, type) {
-    var blob = new Blob([text], { type: type || 'text/plain;charset=utf-8' });
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
-    toast('ดาวน์โหลดแล้ว: ' + name);
-  }
-
-  function exportScaleCsv(r) {
-    var mults = state.data.multipliers;
-    var base = costOf(r, 1);
-    var rows = [['สูตร: ' + r.name], ['วัตถุดิบ', 'หน่วย', 'ต้นทุน/หน่วย'].concat(mults.map(function (m) { return '×' + m; }))];
-    base.lines.forEach(function (l) {
-      rows.push([l.name, l.unit, l.unitCost.toFixed(4)].concat(mults.map(function (m) {
-        return Math.round(l.item.qty * m * 10) / 10;
-      })));
-    });
-    rows.push(['ต้นทุนวัตถุดิบ (บาท)', '', ''].concat(mults.map(function (m) { return costOf(r, m).total.toFixed(2); })));
-    rows.push(['จำนวนชิ้น', '', ''].concat(mults.map(function (m) { return Math.round(r.basePieces * m); })));
-    rows.push(['ต้นทุน/ชิ้น', '', ''].concat(mults.map(function (m) { return costOf(r, m).perPiece.toFixed(2); })));
-    download('สูตร-' + r.name + '.csv', csv(rows), 'text/csv;charset=utf-8');
-  }
-
-  function exportProdCsv(r) {
-    var target = state.targetPieces || 0;
-    var mult = r.basePieces ? target / r.basePieces : 0;
-    var c = costOf(r, mult);
-    var rows = [['ใบเตรียมวัตถุดิบ — ' + r.name + ' จำนวน ' + target + ' ชิ้น'],
-      ['วัตถุดิบ', 'ปริมาณ', 'หน่วย', 'ต้นทุน (บาท)']];
-    c.lines.forEach(function (l) { rows.push([l.name, l.qty, l.unit, l.cost.toFixed(2)]); });
-    rows.push(['รวม', '', '', c.total.toFixed(2)]);
-    download('ใบเตรียมของ-' + r.name + '.csv', csv(rows), 'text/csv;charset=utf-8');
-  }
-
-  /** ส่งออกเฉพาะรอบบัญชีของเดือนที่กำลังดู — 1 ไฟล์ = 1 รอบเดือน ไม่ปนข้ามเดือน */
-  function exportLedgerCsv() {
-    var mk = currentLedgerMonth();
-    var m = ledgerComputed(mk);
-    var rows = [
-      ['บัญชีรายวัน — Bakery By Khunkai'],
-      ['รอบบัญชี', thMonth(mk)],
-      [],
-      ['วันที่', 'รายการ', 'หมวด', 'รายรับ', 'รายจ่าย', 'คงเหลือ']
-    ];
-    m.rows.forEach(function (r) {
-      rows.push([
-        r.date, r.desc, ledgerCatLabel(r.category),
-        r.type === 'income' ? r.amount.toFixed(2) : '',
-        r.type === 'expense' ? r.amount.toFixed(2) : '',
-        r.balance.toFixed(2)
-      ]);
-    });
-    rows.push(['รวมทั้งเดือน', '', '', m.totalIncome.toFixed(2), m.totalExpense.toFixed(2), '']);
-    rows.push(['กำไร/ขาดทุนเดือนนี้', '', '', '', '', m.net.toFixed(2)]);
-    download('บัญชีรายวัน-' + mk + '.csv', csv(rows), 'text/csv;charset=utf-8');
-  }
-
-  function importFile(file) {
-    var fr = new FileReader();
-    fr.onload = function () {
-      try {
-        var d = JSON.parse(fr.result);
-        if (!d.ingredients || !d.recipes) throw new Error('รูปแบบไฟล์ไม่ถูกต้อง');
-        // ใช้ stateVersion ปัจจุบันที่ระบบรู้จักอยู่แล้ว ไม่ใช่ค่าที่ติดมากับไฟล์ backup (อาจเก่ากว่ามาก)
-        // ไม่งั้นระบบกันเขียนทับจะปฏิเสธการบันทึกนี้ทันที
-        var keepVersionImport = state.data.stateVersion;
-        state.data = d;
-        state.data.stateVersion = keepVersionImport;
-        if (!d.multipliers) d.multipliers = clone(SEED_DATA.multipliers);
-        if (!d.ledger || !Array.isArray(d.ledger.entries)) d.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
-        state.recipeId = null;
-        save('นำเข้าข้อมูลเรียบร้อย'); render();
-      } catch (err) {
-        alert('นำเข้าไม่สำเร็จ: ' + err.message);
-      }
-    };
-    fr.readAsText(file);
-  }
-
-  /* ============================================================ start */
-
-  // 1) วาดหน้าจอทันทีด้วยข้อมูลที่แคชไว้ในเครื่อง (ให้เปิดเว็บได้ไวแม้เน็ตช้า)
-  state.data = loadLocal();
   if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
     state.data.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
   }
@@ -1762,21 +1462,21 @@ export function bootLegacyApp() {
       if (remote.stateVersion === state.data.stateVersion) {
         // เซิร์ฟเวอร์ยังเป็น version เดิมตั้งแต่ตอนนั้น -> ไม่มีใครแตะต้องอะไรเลย ส่งของที่ค้างไว้ขึ้นได้ทันที
         lastSyncAt = Date.now();
+        syncedBase = clone(remote);
         doPutNow();
       } else {
-        // มีคนอื่นบันทึกไปแล้วระหว่างที่แท็บนี้ปิด/ไม่ได้ใช้งาน -> คงข้อมูลในเครื่อง (ที่ยังเห็นบนจอ) ไว้ก่อน
-        // แล้วแจ้งเตือนให้ผู้ใช้เลือกเอง แทนที่จะทิ้งการแก้ไขของเขาไปเงียบ ๆ
-        conflict = remote;
+        // มีคนอื่นบันทึกไปแล้วระหว่างที่แท็บนี้ปิด/ไม่ได้ใช้งาน -> ผสานของที่ค้างในเครื่องเข้ากับข้อมูลล่าสุด แล้วส่งขึ้นเอง
         apiAvailable = true;
         lastSyncAt = Date.now();
-        stamp();
-        showConflictAlert();
+        mergeWithServer(remote);
+        doPutNow();
       }
       render();
       return;
     }
 
     state.data = remote;
+    syncedBase = clone(remote);
     if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
       state.data.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
     }
