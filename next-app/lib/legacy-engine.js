@@ -1442,6 +1442,350 @@ export function bootLegacyApp() {
     render();
   });
 
+  /* ผูกค่าจาก input กลับเข้า model */
+  app.addEventListener('input', function (e) {
+    var el = e.target;
+    var bind = el.dataset ? el.dataset.bind : null;
+    if (!bind) return;
+
+    var val = el.type === 'checkbox' ? el.checked
+      : el.type === 'number' ? (parseFloat(el.value) || 0)
+        : el.value;
+    var part = bind.split('.');
+    var r = currentRecipe();
+
+    if (part[0] === 'r' && r) { r[part[1]] = val; }
+    else if (part[0] === 'p' && r) { r.pricing[part[1]] = val; }
+    else if (part[0] === 'k' && r) { r.pricing.pkgItems[+part[1]][part[2]] = val; }
+    else if (part[0] === 'h') { shopData()[part[1]] = val; }
+    else if (part[0] === 'q' && r) { r.items[+part[1]].qty = val; }
+    else if (part[0] === 'c' && r) { r.items[+part[1]].include = val; }
+    else if (part[0] === 'i' && r) { r.items[+part[1]].ingredientId = val; }
+    else if (part[0] === 'g') { state.data.ingredients[+part[2]][part[1]] = val; }
+    else if (part[0] === 's') { state.targetPieces = val; render(); return; }
+    else if (part[0] === 'lmk') { setLedgerMonth(val); return; }
+
+    save();
+    render();
+  });
+
+  app.addEventListener('change', function (e) {
+    if (e.target.id === 'importFile' && e.target.files[0]) importFile(e.target.files[0]);
+  });
+
+  app.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-act]');
+    if (!b) return;
+    var act = b.dataset.act;
+    var r = currentRecipe();
+
+    if (act === 'open-recipe') {
+      state.recipeId = b.dataset.id;
+      if (state.view === 'dashboard') state.view = 'recipes';
+      render();
+
+    } else if (act === 'add-recipe') {
+      var nr = {
+        id: uid('rcp'), name: 'สูตรใหม่', category: '', baseLabel: '1 รอบ',
+        basePieces: 10, note: '', items: [], pricing: { packaging: 0, labor: 0, sellPrice: 0 }
+      };
+      state.data.recipes.push(nr);
+      state.recipeId = nr.id;
+      state.view = 'recipes';
+      save('เพิ่มสูตรใหม่แล้ว'); render();
+
+    } else if (act === 'dup-recipe' && r) {
+      var cp = clone(r);
+      cp.id = uid('rcp');
+      cp.name = r.name + ' (สำเนา)';
+      state.data.recipes.push(cp);
+      state.recipeId = cp.id;
+      save('ทำสำเนาแล้ว'); render();
+
+    } else if (act === 'del-recipe' && r) {
+      if (!confirm('ลบสูตร “' + r.name + '” ?')) return;
+      state.data.recipes = state.data.recipes.filter(function (x) { return x.id !== r.id; });
+      state.recipeId = state.data.recipes.length ? state.data.recipes[0].id : null;
+      save('ลบสูตรแล้ว'); render();
+
+    } else if (act === 'add-item' && r) {
+      if (!state.data.ingredients.length) return toast('ยังไม่มีวัตถุดิบในคลัง');
+      r.items.push({ ingredientId: state.data.ingredients[0].id, qty: 0, include: true });
+      save(); render();
+
+    } else if (act === 'add-pkg' && r) {
+      if (!Array.isArray(r.pricing.pkgItems)) r.pricing.pkgItems = [];
+      r.pricing.pkgItems.push({ name: '', packPrice: 0, packQty: 100, perPiece: 1 });
+      save(); render();
+
+    } else if (act === 'del-pkg' && r) {
+      r.pricing.pkgItems.splice(+b.dataset.idx, 1);
+      save(); render();
+
+    } else if (act === 'set-margin' && r) {
+      r.pricing.targetMarginPct = +b.dataset.v;
+      save(); render();
+
+    } else if (act === 'use-price' && r) {
+      r.pricing.sellPrice = +b.dataset.v || 0;
+      save('ตั้งราคาขายแล้ว'); render();
+
+    } else if (act === 'del-item' && r) {
+      r.items.splice(+b.dataset.idx, 1);
+      save(); render();
+
+    } else if (act === 'add-ing') {
+      var newCat = state.ingFilter !== 'all' ? state.ingFilter : 'other';
+      state.data.ingredients.push({ id: uid('ing'), name: 'วัตถุดิบใหม่', unit: 'กรัม', pack: 1000, price: 0, note: '', category: newCat });
+      save('เพิ่มวัตถุดิบแล้ว'); render();
+
+    } else if (act === 'filter-ing') {
+      state.ingFilter = b.dataset.cat;
+      render();
+
+    } else if (act === 'del-ing') {
+      var delIdx = +b.dataset.idx;
+      var delIng = state.data.ingredients[delIdx];
+      var delUsed = +b.dataset.used || 0;
+      var delMsg = delUsed
+        // ถ้ายังถูกใช้อยู่ในสูตร ต้องเตือนให้ชัดว่าบรรทัดนั้นจะกลายเป็น "(ลบวัตถุดิบนี้ไปแล้ว)"
+        // และคิดต้นทุนเป็น 0 ทันที (ดู costOf() / ingById()) — ไม่ได้ลบบรรทัดในสูตรออกให้อัตโนมัติ
+        ? 'วัตถุดิบ “' + delIng.name + '” ถูกใช้อยู่ใน ' + delUsed + ' สูตร\n' +
+          'ถ้าลบ บรรทัดที่ใช้วัตถุดิบนี้ในสูตรเหล่านั้นจะคิดต้นทุนเป็น 0 บาท (ไม่ได้ลบบรรทัดออกให้)\n' +
+          'ต้องการลบต่อไหม?'
+        : 'ลบวัตถุดิบ “' + delIng.name + '” ?';
+      if (!confirm(delMsg)) return;
+      state.data.ingredients.splice(delIdx, 1);
+      save('ลบวัตถุดิบแล้ว'); render();
+
+    } else if (act === 'export-csv' && r) {
+      exportScaleCsv(r);
+
+    } else if (act === 'export-prod-csv' && r) {
+      exportProdCsv(r);
+
+    } else if (act === 'export-all-csv') {
+      var rows = [['ชื่อวัตถุดิบ', 'หน่วย', 'ขนาดบรรจุ', 'ราคาที่ซื้อ', 'ต้นทุนต่อหน่วย', 'หมายเหตุ']];
+      state.data.ingredients.forEach(function (i) {
+        rows.push([i.name, i.unit, i.pack, i.price, unitCost(i).toFixed(4), i.note || '']);
+      });
+      download('วัตถุดิบ.csv', csv(rows), 'text/csv;charset=utf-8');
+
+    } else if (act === 'export-json') {
+      download('bakery-khunkai-backup.json', JSON.stringify(state.data, null, 2), 'application/json');
+
+    } else if (act === 'import-json') {
+      document.getElementById('importFile').click();
+
+    } else if (act === 'reset') {
+      if (!confirm('รีเซ็ตข้อมูลทั้งหมดกลับเป็นค่าตั้งต้น?')) return;
+      var keepVersionReset = state.data.stateVersion; // รักษา stateVersion ปัจจุบันไว้ ไม่งั้นระบบกันเขียนทับจะปฏิเสธการบันทึกนี้
+      state.data = clone(SEED_DATA);
+      state.data.stateVersion = keepVersionReset;
+      state.recipeId = null;
+      save('รีเซ็ตเรียบร้อย'); render();
+
+    } else if (act === 'print') {
+      window.print();
+
+    } else if (act === 'ldg-type') {
+      state.ledgerDraftType = b.dataset.type;
+      state.ledgerFormError = '';
+      render();
+
+    } else if (act === 'ldg-add') {
+      var descEl = document.getElementById('ldgDesc');
+      var amtEl = document.getElementById('ldgAmount');
+      var dateEl = document.getElementById('ldgDate');
+      var catEl = document.getElementById('ldgCategory');
+      var desc = descEl ? descEl.value.trim() : '';
+      var amount = amtEl ? parseFloat(amtEl.value) : NaN;
+      var ldgDate = (dateEl && dateEl.value) ? dateEl.value : todayStr();
+      var category = catEl ? catEl.value : '';
+
+      if (!desc) { state.ledgerFormError = 'กรุณากรอกรายการ'; render(); return; }
+      if (!isFinite(amount) || amount <= 0) { state.ledgerFormError = 'กรุณากรอกจำนวนเงินให้ถูกต้อง (มากกว่า 0)'; render(); return; }
+      if (!category) { state.ledgerFormError = 'กรุณาเลือกหมวด'; render(); return; }
+
+      var editingEntry = state.ledgerEditingId ? ledgerEntryById(state.ledgerEditingId) : null;
+      if (editingEntry) {
+        // แก้ไขรายการเดิม — แก้ field ตรง ๆ ไม่สร้างรายการใหม่ ไม่กระทบ id (ที่ผูกกับลำดับการเรียงเดิม)
+        editingEntry.date = ldgDate;
+        editingEntry.desc = desc;
+        editingEntry.type = state.ledgerDraftType;
+        editingEntry.category = category;
+        editingEntry.amount = amount;
+        state.ledgerEditingId = null;
+      } else {
+        state.data.ledger.entries.push({
+          id: uid('ldg'), date: ldgDate, desc: desc,
+          type: state.ledgerDraftType, category: category, amount: amount
+        });
+      }
+      state.ledgerFormError = '';
+      state.ledgerDate = ldgDate;
+      // ถ้าบันทึกลงเดือนอื่น (เช่นเลือกวันที่ย้อนหลัง) ให้สลับไปดูรอบบัญชีของเดือนนั้นทันที
+      // ไม่งั้นผู้ใช้จะกดบันทึกแล้วไม่เห็นรายการที่เพิ่งเพิ่ม/แก้ เพราะมันไปอยู่คนละรอบเดือน
+      var addedMk = monthKeyOf(ldgDate);
+      if (addedMk !== currentLedgerMonth()) {
+        state.ledgerMonth = addedMk;
+        state.ledgerMonthPinned = addedMk !== todayMonthStr();
+      }
+      save(editingEntry ? 'แก้ไขรายการแล้ว' : 'บันทึกรายการแล้ว'); render();
+
+    } else if (act === 'ldg-edit') {
+      var editTarget = ledgerEntryById(b.dataset.id);
+      if (!editTarget) return;
+      state.ledgerEditingId = editTarget.id;
+      state.ledgerDraftType = editTarget.type;
+      state.ledgerFormError = '';
+      render();
+      var formCard = document.getElementById('ldgFormCard');
+      if (formCard && formCard.scrollIntoView) formCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    } else if (act === 'ldg-edit-cancel') {
+      state.ledgerEditingId = null;
+      state.ledgerFormError = '';
+      render();
+
+    } else if (act === 'ldg-day-toggle') {
+      var dkey = b.dataset.date;
+      if (state.ledgerExpandedDays[dkey]) delete state.ledgerExpandedDays[dkey];
+      else state.ledgerExpandedDays[dkey] = true;
+      render();
+
+    } else if (act === 'ldg-del') {
+      if (!confirm('ลบรายการนี้?')) return;
+      state.data.ledger.entries = state.data.ledger.entries.filter(function (x) { return x.id !== b.dataset.id; });
+      if (state.ledgerEditingId === b.dataset.id) state.ledgerEditingId = null; // กันฟอร์มค้างแก้ไขรายการที่ถูกลบไปแล้ว
+      save(); render();
+
+    } else if (act === 'ldg-showall') {
+      state.ledgerDate = 'all';
+      render();
+
+    } else if (act === 'ldg-cal-pick') {
+      // แตะวันที่บน Calendar — กรองรายการของวันนั้นทันที (เหมือนเลือกวันที่บนหน้าจองตั๋วเครื่องบิน)
+      state.ledgerDate = b.dataset.date;
+      render();
+
+    } else if (act === 'ldg-today') {
+      setLedgerMonth(todayMonthStr());
+      state.ledgerDate = todayStr();
+      render();
+
+    } else if (act === 'ldg-month-prev') {
+      setLedgerMonth(prevMonthKey(currentLedgerMonth()));
+
+    } else if (act === 'ldg-month-next') {
+      var nx = nextMonthKey(currentLedgerMonth());
+      if (nx > todayMonthStr()) return; // ไม่ให้ข้ามไปเดือนอนาคต
+      setLedgerMonth(nx);
+
+    } else if (act === 'ldg-month-now') {
+      setLedgerMonth(todayMonthStr());
+
+    } else if (act === 'ldg-export') {
+      exportLedgerCsv();
+    }
+  });
+
+  /* ============================================================ export */
+
+  function csv(rows) {
+    return '﻿' + rows.map(function (r) {
+      return r.map(function (c) {
+        c = String(c == null ? '' : c);
+        return /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c;
+      }).join(',');
+    }).join('\r\n');
+  }
+
+  function download(name, text, type) {
+    var blob = new Blob([text], { type: type || 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    toast('ดาวน์โหลดแล้ว: ' + name);
+  }
+
+  function exportScaleCsv(r) {
+    var mults = state.data.multipliers;
+    var base = costOf(r, 1);
+    var rows = [['สูตร: ' + r.name], ['วัตถุดิบ', 'หน่วย', 'ต้นทุน/หน่วย'].concat(mults.map(function (m) { return '×' + m; }))];
+    base.lines.forEach(function (l) {
+      rows.push([l.name, l.unit, l.unitCost.toFixed(4)].concat(mults.map(function (m) {
+        return Math.round(l.item.qty * m * 10) / 10;
+      })));
+    });
+    rows.push(['ต้นทุนวัตถุดิบ (บาท)', '', ''].concat(mults.map(function (m) { return costOf(r, m).total.toFixed(2); })));
+    rows.push(['จำนวนชิ้น', '', ''].concat(mults.map(function (m) { return Math.round(r.basePieces * m); })));
+    rows.push(['ต้นทุน/ชิ้น', '', ''].concat(mults.map(function (m) { return costOf(r, m).perPiece.toFixed(2); })));
+    download('สูตร-' + r.name + '.csv', csv(rows), 'text/csv;charset=utf-8');
+  }
+
+  function exportProdCsv(r) {
+    var target = state.targetPieces || 0;
+    var mult = r.basePieces ? target / r.basePieces : 0;
+    var c = costOf(r, mult);
+    var rows = [['ใบเตรียมวัตถุดิบ — ' + r.name + ' จำนวน ' + target + ' ชิ้น'],
+      ['วัตถุดิบ', 'ปริมาณ', 'หน่วย', 'ต้นทุน (บาท)']];
+    c.lines.forEach(function (l) { rows.push([l.name, l.qty, l.unit, l.cost.toFixed(2)]); });
+    rows.push(['รวม', '', '', c.total.toFixed(2)]);
+    download('ใบเตรียมของ-' + r.name + '.csv', csv(rows), 'text/csv;charset=utf-8');
+  }
+
+  /** ส่งออกเฉพาะรอบบัญชีของเดือนที่กำลังดู — 1 ไฟล์ = 1 รอบเดือน ไม่ปนข้ามเดือน */
+  function exportLedgerCsv() {
+    var mk = currentLedgerMonth();
+    var m = ledgerComputed(mk);
+    var rows = [
+      ['บัญชีรายวัน — Bakery By Khunkai'],
+      ['รอบบัญชี', thMonth(mk)],
+      [],
+      ['วันที่', 'รายการ', 'หมวด', 'รายรับ', 'รายจ่าย', 'คงเหลือ']
+    ];
+    m.rows.forEach(function (r) {
+      rows.push([
+        r.date, r.desc, ledgerCatLabel(r.category),
+        r.type === 'income' ? r.amount.toFixed(2) : '',
+        r.type === 'expense' ? r.amount.toFixed(2) : '',
+        r.balance.toFixed(2)
+      ]);
+    });
+    rows.push(['รวมทั้งเดือน', '', '', m.totalIncome.toFixed(2), m.totalExpense.toFixed(2), '']);
+    rows.push(['กำไร/ขาดทุนเดือนนี้', '', '', '', '', m.net.toFixed(2)]);
+    download('บัญชีรายวัน-' + mk + '.csv', csv(rows), 'text/csv;charset=utf-8');
+  }
+
+  function importFile(file) {
+    var fr = new FileReader();
+    fr.onload = function () {
+      try {
+        var d = JSON.parse(fr.result);
+        if (!d.ingredients || !d.recipes) throw new Error('รูปแบบไฟล์ไม่ถูกต้อง');
+        // ใช้ stateVersion ปัจจุบันที่ระบบรู้จักอยู่แล้ว ไม่ใช่ค่าที่ติดมากับไฟล์ backup (อาจเก่ากว่ามาก)
+        // ไม่งั้นระบบกันเขียนทับจะปฏิเสธการบันทึกนี้ทันที
+        var keepVersionImport = state.data.stateVersion;
+        state.data = d;
+        state.data.stateVersion = keepVersionImport;
+        if (!d.multipliers) d.multipliers = clone(SEED_DATA.multipliers);
+        if (!d.ledger || !Array.isArray(d.ledger.entries)) d.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
+        state.recipeId = null;
+        save('นำเข้าข้อมูลเรียบร้อย'); render();
+      } catch (err) {
+        alert('นำเข้าไม่สำเร็จ: ' + err.message);
+      }
+    };
+    fr.readAsText(file);
+  }
+
+  /* ============================================================ start */
+
+  // 1) วาดหน้าจอทันทีด้วยข้อมูลที่แคชไว้ในเครื่อง (ให้เปิดเว็บได้ไวแม้เน็ตช้า)
+  state.data = loadLocal();
   if (!state.data.ledger || !Array.isArray(state.data.ledger.entries)) {
     state.data.ledger = { openingBalance: 0, monthlyOpenings: {}, entries: [] };
   }
