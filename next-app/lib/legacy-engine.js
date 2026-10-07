@@ -846,8 +846,8 @@ export function bootLegacyApp() {
         p.pkgItems.map(function (it, idx) {
           return '<tr>' +
             '<td>' + inp('text', 'k.' + idx + '.name', it.name || '', 'placeholder="เช่น ถุงใส"') + '</td>' +
-            '<td>' + inp('number', 'k.' + idx + '.packPrice', it.packPrice || 0, 'step="0.5" min="0"') + '</td>' +
-            '<td>' + inp('number', 'k.' + idx + '.packQty', it.packQty || 0, 'step="1" min="0"') + '</td>' +
+            '<td>' + ninp('k.' + idx + '.packPrice', it.packPrice || 0, 'step="0.5" min="0"') + '</td>' +
+            '<td>' + ninp('k.' + idx + '.packQty', it.packQty || 0, 'step="1" min="0"') + '</td>' +
             '<td>' + inp('number', 'k.' + idx + '.perPiece', isFinite(it.perPiece) ? it.perPiece : 1, 'step="0.5" min="0"') + '</td>' +
             '<td class="num">' + money(pkgItemPerPiece(it)) + '</td>' +
             '<td><button class="btn ghost sm" data-act="del-pkg" data-idx="' + idx + '" title="ลบแถว">✕</button></td></tr>';
@@ -862,8 +862,8 @@ export function bootLegacyApp() {
     /* ② ค่าแรง + แก๊ส/ไฟ */
     html += '<div class="card"><h2>② ค่าแรง และ ค่าแก๊ส/ไฟ <span class="hint">กรอกเวลา ระบบคิดเป็นบาทให้</span></h2>' +
       '<div class="grid cols-3">' +
-        f('ใช้เวลาทำงานต่อรอบ (นาที) — ผสม ปั้น แต่ง บรรจุ', inp('number', 'p.workMin', p.workMin || 0, 'step="5" min="0"')) +
-        f('ใช้เวลาเปิดเตาอบต่อรอบ (นาที)', inp('number', 'p.bakeMin', p.bakeMin || 0, 'step="5" min="0"')) +
+        f('ใช้เวลาทำงานต่อรอบ (นาที) — ผสม ปั้น แต่ง บรรจุ', ninp('p.workMin', p.workMin || 0, 'step="5" min="0"')) +
+        f('ใช้เวลาเปิดเตาอบต่อรอบ (นาที)', ninp('p.bakeMin', p.bakeMin || 0, 'step="5" min="0"')) +
         f('ค่าแรง + แก๊ส/ไฟ ต่อรอบ (คำนวณให้)', '<div class="big">' + money(x.labor) + ' บาท</div>') +
       '</div>';
     if (!x.hasTime && p.labor > 0) {
@@ -871,13 +871,17 @@ export function bootLegacyApp() {
     } else if (x.hasTime) {
       html += '<p class="muted" style="margin-top:8px">ค่าแรง ' + money(x.work) + ' + แก๊ส/ไฟ ' + money(x.energy) + ' บาท</p>';
     }
-    html += '<details style="margin-top:12px"><summary>อัตราของร้าน (ใช้ร่วมกันทุกสูตร — ปรับให้ตรงกับร้านคุณ)</summary>' +
-      '<div class="grid cols-4" style="margin-top:12px">' +
-        f('ค่าแรงต่อชั่วโมง (บาท)', inp('number', 'h.wagePerHour', shop.wagePerHour, 'step="5" min="0"')) +
-        f('ราคาถังแก๊ส (บาท)', inp('number', 'h.gasTankPrice', shop.gasTankPrice, 'step="10" min="0"')) +
-        f('ถังหนึ่งเปิดเตาได้กี่ชั่วโมง', inp('number', 'h.gasTankHours', shop.gasTankHours, 'step="1" min="0"')) +
-        f('ค่าไฟเตา/เครื่องผสม ต่อชั่วโมง (บาท)', inp('number', 'h.electricPerHour', shop.electricPerHour, 'step="1" min="0"')) +
-      '</div><p class="muted" style="margin-top:8px">แก๊ส+ไฟ ตกชั่วโมงละ ' + money(energyPerHour()) + ' บาท</p></details></div>';
+    var ratesMissing = (p.workMin > 0 && !(shop.wagePerHour > 0)) || (p.bakeMin > 0 && !(energyPerHour() > 0));
+    if (ratesMissing) {
+      html += '<p class="note" style="margin-top:8px">ยังไม่ได้ตั้งอัตราของร้านด้านล่าง ค่าแรงและแก๊ส/ไฟจึงยังเป็น 0 — กรอกค่าแรงต่อชั่วโมง และราคาถังแก๊ส/ค่าไฟ ระบบจะคิดให้ทันที</p>';
+    }
+    html += '<h3 style="margin-top:16px">อัตราของร้าน <span class="hint">ใช้ร่วมกันทุกสูตร กรอกครั้งเดียว</span></h3>' +
+      '<div class="grid cols-4" style="margin-top:8px">' +
+        f('ค่าแรงต่อชั่วโมง (บาท)', ninp('h.wagePerHour', shop.wagePerHour, 'step="5" min="0"')) +
+        f('ราคาถังแก๊ส (บาท)', ninp('h.gasTankPrice', shop.gasTankPrice, 'step="10" min="0"')) +
+        f('ถังหนึ่งเปิดเตาได้กี่ชั่วโมง', ninp('h.gasTankHours', shop.gasTankHours, 'step="1" min="0"')) +
+        f('ค่าไฟเตา/เครื่องผสม ต่อชั่วโมง (บาท)', ninp('h.electricPerHour', shop.electricPerHour, 'step="1" min="0"')) +
+      '</div><p class="muted" style="margin-top:8px">แก๊ส+ไฟ ตกชั่วโมงละ ' + money(energyPerHour()) + ' บาท</p></div>';
 
     /* ③ ราคาขาย */
     var margin = p.targetMarginPct > 0 && p.targetMarginPct < 100 ? p.targetMarginPct : 60;
@@ -897,8 +901,8 @@ export function bootLegacyApp() {
       '</div>' +
       '<div class="actions" style="margin-top:12px"><button class="btn primary" data-act="use-price" data-v="' + rec + '">ใช้ราคา ' + num(rec, 0) + ' บาท เป็นราคาขาย</button></div>' +
       '<div class="grid cols-3" style="margin-top:16px">' +
-        f('ราคาขายที่ใช้จริง (บาท/ชิ้น) — แก้เองได้', inp('number', 'p.sellPrice', p.sellPrice || 0, 'step="0.5" min="0"')) +
-        f('ค่าธรรมเนียมแอปเดลิเวอรี (%)', inp('number', 'h.deliveryFeePct', shop.deliveryFeePct, 'step="1" min="0"')) +
+        f('ราคาขายที่ใช้จริง (บาท/ชิ้น) — แก้เองได้', ninp('p.sellPrice', p.sellPrice || 0, 'step="0.5" min="0"')) +
+        f('ค่าธรรมเนียมแอปเดลิเวอรี (%)', ninp('h.deliveryFeePct', shop.deliveryFeePct, 'step="1" min="0"')) +
       '</div></div>';
 
     html += '<div class="grid cols-4">' +
@@ -1378,6 +1382,10 @@ export function bootLegacyApp() {
   function inp(type, bind, value, extra) {
     return '<input type="' + type + '" data-bind="' + bind + '" data-fkey="' + bind + '" value="' +
       esc(value) + '" ' + (extra || '') + '>';
+  }
+  /** ช่องตัวเลขที่ถ้าค่าเป็น 0 ให้แสดงว่างพร้อม placeholder "0" — พิมพ์ได้เลยไม่ต้องลบเลข 0 ก่อน */
+  function ninp(bind, value, extra) {
+    return inp('number', bind, value ? value : '', (extra || '') + ' placeholder="0"');
   }
   function select(bind, value) {
     var groups = {};
